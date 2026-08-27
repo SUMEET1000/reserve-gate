@@ -1,0 +1,56 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>reserve-gate test payment</title>
+<style>
+  body { font: 15px/1.6 system-ui, sans-serif; max-width: 34rem; margin: 3rem auto; padding: 0 1rem; }
+  input { width: 100%; padding: .5rem; font: inherit; font-family: ui-monospace, monospace; }
+  label { display: block; margin: 1rem 0 .25rem; font-weight: 600; }
+  button { margin-top: 1.5rem; padding: .6rem 1.2rem; font: inherit; cursor: pointer; }
+  pre { background: #f4f4f4; padding: .75rem; overflow-x: auto; }
+</style>
+
+<h1>reserve-gate test payment</h1>
+
+<p>Razorpay's API cannot make a payment; a person has to. This page opens Razorpay
+Checkout against an order so there is an <em>authorized</em> payment for
+<code>capture_payment</code> to capture.</p>
+
+<p>Test mode only. No real money moves. Pay with the domestic Visa test card
+<code>4100 2800 0000 1007</code>, any future expiry, any CVV &mdash; or with
+Netbanking, which needs nothing typed.</p>
+
+<p>Razorpay's other well-known test card, <code>4111 1111 1111 1111</code>, is an
+<em>international</em> card and is declined on an account that has not enabled
+international payments.</p>
+
+<label>Key ID (the <code>rzp_test_</code> one, safe in a browser)</label>
+<input id="key" placeholder="rzp_test_...">
+
+<label>Order ID (from <code>create_order</code>)</label>
+<input id="order" placeholder="order_...">
+
+<button id="pay">Pay</button>
+
+<pre id="out">Waiting.</pre>
+
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script>
+  const out = document.getElementById("out");
+  document.getElementById("pay").onclick = () => {
+    const key = document.getElementById("key").value.trim();
+    const order_id = document.getElementById("order").value.trim();
+    if (!key.startsWith("rzp_test_")) return out.textContent = "Use a rzp_test_ key. Refusing a live key.";
+    if (!order_id) return out.textContent = "Order ID is required.";
+    new Razorpay({
+      key, order_id, name: "reserve-gate",
+      description: "test-mode payment so capture_payment has something to capture",
+      // Capture is set to Manual in the dashboard, so this payment stops at
+      // 'authorized' and waits for the gate to capture it.
+      handler: r => out.textContent =
+        "authorized\n\npayment_id: " + r.razorpay_payment_id +
+        "\norder_id:   " + r.razorpay_order_id +
+        "\n\nNow capture it through the gate with that payment_id.",
+      modal: { ondismiss: () => out.textContent = "Cancelled." },
+    }).open();
+  };
+</script>

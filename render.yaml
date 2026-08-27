@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: reserve-gate
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m src.server --http
+    healthCheckPath: /health
+    envVars:
+      # Timestamps in the audit log must reconcile with the Razorpay dashboard
+      # regardless of where the instance runs.
+      - key: TZ
+        value: UTC
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RESERVE_GATE_TOKEN
+        sync: false

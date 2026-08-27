@@ -4,7 +4,9 @@
 !.env.example
 *.pem
 
-# Local ledger and audit database
+# Local ledger and working audit log. A curated sample is committed instead.
+audit.jsonl
+audit-test.jsonl
 *.db
 *.db-wal
 *.db-shm

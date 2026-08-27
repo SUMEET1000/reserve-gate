@@ -14,12 +14,32 @@ from typing import Any
 from starlette.responses import JSONResponse
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from . import audit
 from .upstream import UpstreamError, call_razorpay
 
+
+def _allowed_hosts() -> list[str]:
+    """Host values this server will answer to.
+
+    The MCP transport rejects an unrecognised Host header to block DNS
+    rebinding, so the public hostname has to be declared. Render publishes it
+    as RENDER_EXTERNAL_HOSTNAME; locally only loopback is allowed.
+    """
+    hosts = ["localhost", "127.0.0.1", "localhost:*", "127.0.0.1:*"]
+    external = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+    if external:
+        hosts += [external, f"{external}:*"]
+    return hosts
+
+
 # Underscored, not hyphenated: some MCP clients reject a hyphen in a server name.
-mcp = FastMCP("reserve_gate")
+mcp = FastMCP("reserve_gate", transport_security=TransportSecuritySettings(
+    allowed_hosts=_allowed_hosts(),
+    allowed_origins=[f"https://{h}" for h in _allowed_hosts()] +
+                    [f"http://{h}" for h in _allowed_hosts()],
+))
 
 
 async def _forward(tool: str, args: dict, money: bool) -> Any:

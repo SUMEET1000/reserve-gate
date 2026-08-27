@@ -75,3 +75,22 @@ def test_rejection_is_recorded(monkeypatch, tmp_path):
     log = tmp_path / "a.jsonl"
     client(monkeypatch, audit_to=log).post("/mcp", json={})
     assert "auth_reject" in log.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("external, host, ok", [
+    (None,                        "localhost:8000",           True),
+    (None,                        "evil.example",             False),
+    ("reserve-gate.onrender.com", "reserve-gate.onrender.com", True),
+    ("reserve-gate.onrender.com", "evil.example",             False),
+])
+def test_host_allowlist(monkeypatch, external, host, ok):
+    """DNS-rebinding protection stays on. The public hostname is declared, not
+    disabled, so a request arriving under any other Host is still refused."""
+    if external:
+        monkeypatch.setenv("RENDER_EXTERNAL_HOSTNAME", external)
+    else:
+        monkeypatch.delenv("RENDER_EXTERNAL_HOSTNAME", raising=False)
+    allowed = server._allowed_hosts()
+    matched = host in allowed or any(
+        a.endswith(":*") and host.startswith(a[:-2] + ":") for a in allowed)
+    assert matched is ok

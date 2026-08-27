@@ -99,7 +99,15 @@ async def fetch_payment(payment_id: str) -> Any:
 
 @mcp.custom_route("/health", ["GET"])
 async def health(_request):
-    return JSONResponse({"ok": True, "service": "reserve-gate"})
+    """Open on purpose: an uptime check should not need the gate credential.
+    The commit and the declared hostname are reported so a deployment can be
+    identified without reading the host's dashboard."""
+    return JSONResponse({
+        "ok": True,
+        "service": "reserve-gate",
+        "commit": os.environ.get("RENDER_GIT_COMMIT", "local")[:7],
+        "allowed_hosts": _allowed_hosts(),
+    })
 
 
 def bearer_auth(app):

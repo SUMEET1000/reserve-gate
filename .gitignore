@@ -29,11 +29,8 @@ TODO.md
 submission-answers.md
 scratch/
 
-# Agent and editor tooling
-.claude/
-CLAUDE.md
-AGENTS.md
-.cursor/
+# Editor and OS
 .idea/
 .vscode/
 .DS_Store
+Thumbs.db

@@ -1,0 +1,3 @@
+# Only for `buyer.py --llm`. Deliberately not in requirements.txt: running the
+# tests and the scripted buyer must not pull a model SDK.
+google-genai==1.51.0

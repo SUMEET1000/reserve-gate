@@ -1,0 +1,4 @@
+# The audit log is hash-chained. CRLF injection changes the bytes and breaks
+# chain verification on a machine with a different core.autocrlf setting.
+*.jsonl -text
+*.py text eol=lf

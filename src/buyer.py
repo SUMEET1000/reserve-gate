@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import os
 import sys
+import tempfile
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -133,7 +134,11 @@ def main() -> None:
         mode = "overspend"
     else:
         mode = "scripted"
-    asyncio.run(run(mode, a.db))
+    if mode == "overspend" and not a.db:
+        with tempfile.TemporaryDirectory() as directory:
+            asyncio.run(run(mode, os.path.join(directory, "reserve_gate.db")))
+    else:
+        asyncio.run(run(mode, a.db))
 
 
 if __name__ == "__main__":

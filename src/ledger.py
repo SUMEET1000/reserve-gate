@@ -94,7 +94,11 @@ def iso(dt: datetime) -> str:
     local ledger would stamp IST and the deployed one UTC, and the audit trail
     would not reconcile with the Razorpay dashboard a judge is comparing it to."""
     assert dt.tzinfo is not None, "datetime must be timezone-aware"
-    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    # A fixed width matters: these strings are compared with SQL `>` in the
+    # velocity window, and "12:00:00.5Z" sorts before "12:00:00Z" because
+    # "." < "Z". Always emitting microseconds keeps the ordering true.
+    return dt.astimezone(timezone.utc).isoformat(
+        timespec="microseconds").replace("+00:00", "Z")
 
 
 def parse(s: str | None) -> datetime | None:
@@ -280,9 +284,16 @@ def authorize(conn: sqlite3.Connection, call: Call, config: Config, *,
         ref = None
         reservation_id = None
 
-        if d.outcome in (ALLOW, HOLD) and state.replay is None:
+        # R6 counts every call that is not a replay, refusals included. A
+        # runaway loop making a thousand junk calls is unbounded consumption
+        # whether or not the gate lets any of them through (OWASP LLM06:2026);
+        # counting only the allowed ones leaves that loop unbounded. The cost is
+        # that an agent which keeps guessing wrong burns its own minute of
+        # quota, and it is the right party to charge for it.
+        if state.replay is None:
             conn.execute("INSERT INTO money_calls (ts, caller_id, tool) VALUES (?, ?, ?)",
                          (iso(now), call.caller_id, call.tool))
+        if d.outcome in (ALLOW, HOLD) and state.replay is None:
             conn.execute(
                 "INSERT INTO idempotency (key, caller_id, tool, args_hash, created_at, expires_at)"
                 " VALUES (?, ?, ?, ?, ?, ?)",

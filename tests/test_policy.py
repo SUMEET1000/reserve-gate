@@ -274,3 +274,18 @@ def test_a_block_longer_than_ninety_days_is_refused_at_load(tmp_path):
     for over in (91, 120):
         with pytest.raises(ValueError, match="1..90"):
             load_config(written(over))
+
+
+def test_free_text_has_nowhere_to_reach_the_decision():
+    """B15, proved structurally rather than by example.
+
+    A product name, a note, an address or an upstream error string is exactly
+    where a prompt injection rides. decide() cannot be steered by any of them
+    because Call carries no field for them at all - the payload has nowhere to
+    go. One assertion about the type is a stronger claim than any number of
+    cases about values, and unlike a case list it cannot quietly rot.
+    """
+    fields = set(Call.__dataclass_fields__)
+    assert fields == {"tool", "caller_id", "amount", "currency", "order_id", "idem_key"}
+    for free_text in ("notes", "receipt", "description", "customer", "address", "error"):
+        assert free_text not in fields, f"{free_text} would give a payload a way in"

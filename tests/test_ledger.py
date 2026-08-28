@@ -514,3 +514,13 @@ def test_one_block_pays_for_many_purchases(conn):
     # The block is not one-shot, and it still stops at its own edge.
     d, _ = ledger.authorize(conn, order(500000, key="over"), CFG, now=NOW)
     assert (d.outcome, d.rule) == (BLOCK, "R1"), d
+
+
+def test_a_refused_runaway_loop_still_trips_the_speed_limit(conn):
+    """B24. Unbounded consumption is about the calls made, not the calls that got
+    through. Ten refusals in the window exhaust R6, so the eleventh is stopped by
+    the throttle rather than being free forever."""
+    over_the_cap = order(amount=CFG.max_txn + 1)
+    rules = [ledger.authorize(conn, over_the_cap, CFG, now=NOW)[0].rule for _ in range(11)]
+    assert rules[:10] == ["R5"] * 10, rules
+    assert rules[10] == "R6", f"the eleventh refusal should be the throttle, got {rules[10]!r}"

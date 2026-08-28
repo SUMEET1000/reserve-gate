@@ -37,8 +37,8 @@ AI buyer.
         |  the block:  born at boot from policy.yaml         |
         |              killed by POST /revoke/{block_id}     |
         |                                                   |
-        |  /approve and /revoke take the ADMIN token,        |
-        |  which the agent is never given                    |
+        |  /approve, /revoke and /block take the ADMIN       |
+        |  token, which the agent is never given             |
         |                                                   |
         |  every outcome -> one line in audit.jsonl          |
         +--------------------------------------------------+
@@ -70,6 +70,7 @@ adopting a changed money API would be the wrong default.
 | Boundary | Control |
 |---|---|
 | Public internet to the deployed server | Bearer token, constant-time compare. `/health` is the only open route. |
+| Agent to the operator's controls | A second secret. `/approve`, `/revoke` and `/block` take `RESERVE_GATE_ADMIN_TOKEN`; the agent holds only `RESERVE_GATE_TOKEN`. Guarding the approval gate with the token the gated party already carries would let the agent approve its own spending. |
 | Caller to upstream | The caller's `Authorization` header is removed before forwarding. Only the gate's own Razorpay credential ever reaches Razorpay. |
 | Upstream data to the model | Order notes, receipts and error strings come back from Razorpay and reach the model's context. No decision is ever made from that text. |
 | Upstream URL | A module constant. It is never read from a request. |

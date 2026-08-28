@@ -17,3 +17,7 @@ services:
         sync: false
       - key: RESERVE_GATE_TOKEN
         sync: false
+      # The operator's secret. The service refuses to start without it, so that
+      # /approve and /revoke can never fall back to the agent's own credential.
+      - key: RESERVE_GATE_ADMIN_TOKEN
+        sync: false

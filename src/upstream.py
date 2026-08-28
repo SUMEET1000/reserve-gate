@@ -17,7 +17,19 @@ UPSTREAM_URL = "https://mcp.razorpay.com/mcp"
 
 
 class UpstreamError(RuntimeError):
-    """Razorpay refused the call or was unreachable."""
+    """Razorpay refused the call or was unreachable.
+
+    `known` separates the two, and G14 turns on the difference. Razorpay
+    answering with a refusal proves the call did not happen, so the hold can go
+    back to the block. A timeout or a dropped connection proves nothing —
+    Razorpay may have captured and lost the reply — so releasing there would
+    hand back a balance that was really spent and let the next call spend it
+    again.
+    """
+
+    def __init__(self, message: str, *, known: bool = True):
+        super().__init__(message)
+        self.known = known
 
 
 def _auth_header() -> str:
@@ -47,8 +59,10 @@ async def call_razorpay(tool: str, args: dict) -> dict:
                 result = await session.call_tool(tool, args)
     except UpstreamError:
         raise
-    except Exception as e:  # transport, TLS, timeout, protocol - all the same to a caller
-        raise UpstreamError(f"{type(e).__name__}: {e}") from e
+    except Exception as e:
+        # Transport, TLS, timeout, protocol. None of them say whether Razorpay
+        # acted, so the outcome is unknown and the caller must not release.
+        raise UpstreamError(f"{type(e).__name__}: {e}", known=False) from e
 
     text = "".join(c.text for c in result.content if getattr(c, "text", None))
     if result.isError:

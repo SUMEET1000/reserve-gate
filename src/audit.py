@@ -33,7 +33,8 @@ def _live_secrets() -> list[str]:
     """Read lazily: importing this module must not require any credential."""
     return [v for v in (os.environ.get(n) for n in
                         ("RAZORPAY_KEY_SECRET", "RAZORPAY_KEY_ID",
-                         "RESERVE_GATE_TOKEN", "GEMINI_API_KEY")) if v]
+                         "RAZORPAY_WEBHOOK_SECRET", "RESERVE_GATE_TOKEN",
+                         "GEMINI_API_KEY")) if v]
 
 
 def _scrub(value, secrets: list[str]):

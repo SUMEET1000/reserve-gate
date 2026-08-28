@@ -286,6 +286,7 @@ def test_free_text_has_nowhere_to_reach_the_decision():
     cases about values, and unlike a case list it cannot quietly rot.
     """
     fields = set(Call.__dataclass_fields__)
-    assert fields == {"tool", "caller_id", "amount", "currency", "order_id", "idem_key"}
+    assert fields == {"tool", "caller_id", "amount", "currency", "order_id", "payment_id",
+                      "idem_key"}
     for free_text in ("notes", "receipt", "description", "customer", "address", "error"):
         assert free_text not in fields, f"{free_text} would give a payload a way in"

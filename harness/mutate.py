@@ -3,7 +3,7 @@
 A suite that passes cannot tell you whether it is strong or whether it is
 decoration - a check you can pass by reading the code is not a check. This turns
 that around: it deletes each rule from a copy of `decide()` and re-scores the
-same 130 cases. Every row must go red. A row that stays green means no case
+same 150 cases. Every row must go red. A row that stays green means no case
 depends on that rule, and the harness is not measuring it.
 
 This control does not care who wrote the cases, which is the point. Answering
@@ -54,6 +54,7 @@ MUTATIONS = [
     ("R7 in flight", "if state.in_flight:"),
     ("G15 tool allowlist", "if call.tool not in MONEY_TOOLS:"),
     ("G16 key conflict", "if state.conflict:"),
+    ("G4 frozen block", "if block.frozen_at is not None:"),
     ("approval hold", "if amount > config.approval_over:"),
 ]
 
@@ -77,10 +78,12 @@ def score_with(source: str, cases: list[dict]) -> dict:
     # false-allow is only reassuring if something else can be named as having
     # stopped the money, so the substitute is reported rather than assumed.
     caught_by = sorted({r["got_rule"] or "ALLOW" for r in rows
-                        if r["false_allow"] or r["wrong_rule"] or r["twin_diverged"]})
+                        if r["false_allow"] or r["wrong_rule"] or r["wrong_effect"]
+                        or r["twin_diverged"]})
     return {"false_allow": sum(r["false_allow"] for r in rows),
             "false_block": sum(r["false_block"] for r in rows),
             "wrong_rule": sum(r["wrong_rule"] for r in rows),
+            "wrong_effect": sum(r["wrong_effect"] for r in rows),
             "twins": sum(r["twin_diverged"] for r in rows),
             "caught_by": ", ".join(caught_by) or "-"}
 
@@ -92,14 +95,16 @@ def main() -> int:
 
     base = score_with(original, cases)
     rows = [("baseline - nothing mutated", base, base["false_allow"] == 0
-             and base["wrong_rule"] == 0 and base["twins"] == 0)]
+             and base["wrong_rule"] == 0 and base["wrong_effect"] == 0
+             and base["twins"] == 0)]
 
     for label, anchor in MUTATIONS:
         if original.count(anchor) != 1:
             rows.append((label + "  [ANCHOR MISSING]", {}, False))
             continue
         got = score_with(original.replace(anchor, "if False:"), cases)
-        noticed = got["false_allow"] + got["wrong_rule"] + got["twins"]
+        noticed = (got["false_allow"] + got["wrong_rule"] + got["wrong_effect"]
+                   + got["twins"])
         rows.append((label, got, noticed > 0))
 
     width = max(len(r[0]) for r in rows)

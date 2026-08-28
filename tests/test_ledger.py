@@ -209,16 +209,16 @@ def test_a_released_call_can_be_retried_with_the_same_arguments(conn):
     assert d2.outcome == ALLOW and ref2 is not None, d2
 
 
-def test_committing_the_same_reservation_twice_raises(conn):
-    """B26. A double commit is loud, never a silent second debit."""
+def test_committing_the_same_payment_twice_is_a_noop(conn):
+    """A webhook and the normal response may report the same capture."""
     d, ref = ledger.authorize(conn, order(50000), CFG, now=NOW)
     ledger.settle_order(conn, ref, order_id="order_D", result={"id": "order_D"})
     cap = Call(tool="capture_payment", caller_id=CALLER, amount=50000,
                currency="INR", order_id="order_D")
     _, ref2 = ledger.authorize(conn, cap, CFG, now=NOW)
-    ledger.settle_capture(conn, ref2, result={"id": "pay_D"})
-    with pytest.raises(RuntimeError, match="not held"):
-        ledger.settle_capture(conn, ref2, result={"id": "pay_D"})
+    assert ledger.settle_capture(conn, ref2, result={"id": "pay_D"}) is True
+    assert ledger.settle_capture(conn, ref2, result={"id": "pay_D"}) is False
+    assert balance(conn) == (50000, 0, 950000)
 
 
 # revocation, idempotency, velocity ------------------------------------------
@@ -297,6 +297,14 @@ def test_a_hold_reserves_so_the_balance_cannot_be_spent_underneath_it(conn):
     assert d.outcome == HOLD, d
     assert balance(conn) == (0, 300000, 700000)
     ledger.release(conn, ref, reason="hold expired unapproved", now=NOW)
+    assert balance(conn) == (0, 0, 1000000)
+
+
+def test_an_expired_hold_cannot_be_approved(conn):
+    decision, ref = ledger.authorize(conn, order(300000), CFG, now=NOW)
+    assert decision.outcome == HOLD
+    expired = NOW + timedelta(minutes=CFG.reservation_ttl_minutes, seconds=1)
+    assert ledger.renew_hold(conn, ref, CFG.reservation_ttl_minutes, now=expired) is False
     assert balance(conn) == (0, 0, 1000000)
 
 

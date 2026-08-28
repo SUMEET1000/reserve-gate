@@ -6,7 +6,9 @@ unauthenticated request must never reach the MCP layer.
 import asyncio
 
 import pytest
+from starlette.applications import Starlette
 from starlette.responses import JSONResponse
+from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from src import ledger, server
@@ -149,3 +151,89 @@ def test_only_a_known_refusal_hands_the_hold_back(monkeypatch, tmp_path, known, 
         asyncio.run(server._settle(conn, "create_order", ref, {}))
     assert ledger.snapshot(conn, caller).held == held_after
     conn.close()
+
+
+@pytest.mark.parametrize("payment", [
+    {"order_id": "order_capture", "amount": 50001, "currency": "INR"},
+    {"order_id": "order_capture", "amount": 50000, "currency": "USD"},
+])
+def test_capture_arguments_must_match_razorpays_payment(monkeypatch, tmp_path, payment):
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "capture.db"))
+    monkeypatch.setenv("RESERVE_GATE_TOKEN", TOKEN)
+    conn = ledger.connect()
+    caller = server.caller_id()
+    ledger.init(conn, server.config(), caller_id=caller)
+    _, ref = ledger.authorize(
+        conn, Call("create_order", caller, 50000, "INR", idem_key="create-capture"),
+        server.config())
+    ledger.settle_order(conn, ref, order_id="order_capture", result={"id": "order_capture"})
+    conn.close()
+    calls = []
+
+    async def upstream(tool, args):
+        calls.append((tool, args))
+        return payment
+
+    monkeypatch.setattr(server, "call_razorpay", upstream)
+    with pytest.raises(ValueError, match=r"BLOCK \[R0\]"):
+        asyncio.run(server.capture_payment("pay_capture", 50000, "INR"))
+    assert [tool for tool, _ in calls] == ["fetch_payment"]
+    conn = ledger.connect()
+    assert (ledger.snapshot(conn, caller).spent, ledger.snapshot(conn, caller).held) == (0, 50000)
+    conn.close()
+
+
+def test_approval_is_operator_only_and_single_use(monkeypatch, tmp_path):
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "approve.db"))
+    monkeypatch.setenv("RESERVE_GATE_TOKEN", TOKEN)
+    monkeypatch.setenv("RESERVE_GATE_ADMIN_TOKEN", ADMIN)
+    caller = server.caller_id()
+    conn = ledger.connect()
+    ledger.init(conn, server.config(), caller_id=caller)
+    decision, ref = ledger.authorize(
+        conn, Call("create_order", caller, 300000, "INR", idem_key="approval"),
+        server.config())
+    conn.close()
+    server._HOLDS[ref.reservation_id] = (
+        "create_order", {"amount": 300000, "currency": "INR"}, ref)
+    calls = []
+
+    async def upstream(tool, args):
+        calls.append((tool, args))
+        return {"id": "order_approved"}
+
+    monkeypatch.setattr(server, "call_razorpay", upstream)
+    app = Starlette(routes=[Route("/approve/{call_id}", server.approve, methods=["POST"])])
+    with TestClient(server.bearer_auth(app)) as c:
+        path = "/approve/" + ref.reservation_id
+        assert c.post(path, headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 401
+        assert c.post(path, headers={"Authorization": f"Bearer {ADMIN}"}).status_code == 200
+        assert c.post(path, headers={"Authorization": f"Bearer {ADMIN}"}).status_code == 404
+    assert len(calls) == 1
+
+
+def test_expired_approval_never_reaches_upstream(monkeypatch, tmp_path):
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "expired-approve.db"))
+    monkeypatch.setenv("RESERVE_GATE_TOKEN", TOKEN)
+    monkeypatch.setenv("RESERVE_GATE_ADMIN_TOKEN", ADMIN)
+    caller = server.caller_id()
+    conn = ledger.connect()
+    ledger.init(conn, server.config(), caller_id=caller)
+    _, ref = ledger.authorize(
+        conn, Call("create_order", caller, 300000, "INR", idem_key="expired-approval"),
+        server.config())
+    conn.execute("UPDATE reservations SET expires_at = '2000-01-01T00:00:00.000000Z'"
+                 " WHERE reservation_id = ?", (ref.reservation_id,))
+    conn.close()
+    server._HOLDS[ref.reservation_id] = (
+        "create_order", {"amount": 300000, "currency": "INR"}, ref)
+
+    async def must_not_run(_tool, _args):
+        raise AssertionError("expired approval reached upstream")
+
+    monkeypatch.setattr(server, "call_razorpay", must_not_run)
+    app = Starlette(routes=[Route("/approve/{call_id}", server.approve, methods=["POST"])])
+    with TestClient(server.bearer_auth(app)) as c:
+        r = c.post("/approve/" + ref.reservation_id,
+                   headers={"Authorization": f"Bearer {ADMIN}"})
+    assert r.status_code == 410

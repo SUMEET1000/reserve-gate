@@ -152,7 +152,10 @@ def main() -> None:
         raise SystemExit("RESERVE_GATE_TOKEN is not set. Refusing to serve an "
                          "unauthenticated money endpoint.")
     import uvicorn
-    uvicorn.run(bearer_auth(mcp.streamable_http_app()), host="0.0.0.0", port=a.port)
+    # 0.0.0.0 is required: Render routes to the container's external interface,
+    # and the bearer check above runs in front of every request.
+    uvicorn.run(bearer_auth(mcp.streamable_http_app()),
+                host="0.0.0.0", port=a.port)  # nosec B104
 
 
 if __name__ == "__main__":

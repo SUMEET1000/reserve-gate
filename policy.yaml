@@ -1,0 +1,33 @@
+# reserve-gate policy.
+#
+# Every number here is enforced by src/policy.py, which reads no other source of
+# truth. Amounts are in sub-units of `currency` — paise for INR, so 1000000 is
+# ten thousand rupees.
+
+block:
+  # NPCI caps a UPI Reserve Pay block at 10,000 rupees. That is what this models.
+  reserved: 1000000
+  # A block holds one currency. A call in any other is refused, never converted:
+  # comparing two currencies needs a live exchange rate, and a decision that
+  # rests on a number moving every second is not explainable.
+  currency: INR
+  # R2 allows up to 90 days.
+  expires_days: 30
+
+rules:
+  # R5, the hard ceiling for one call. 5,000 rupees.
+  max_txn: 500000
+  # Above this a call becomes HOLD and waits for POST /approve/{call_id}. It has
+  # to sit below max_txn or R5 refuses first and no call can ever reach a hold,
+  # which load_config checks rather than leaving to be discovered on camera.
+  approval_over: 200000
+  # R6, allowed money calls per rolling window. OWASP LLM06:2026, Denial of Wallet.
+  velocity_calls: 10
+  velocity_window_minutes: 1
+  # E2: an order that is never paid returns its reservation to the block after
+  # this, so unpaid orders do not consume the block forever.
+  reservation_ttl_minutes: 15
+  # R7: how long a key the *proxy* derived is remembered. Long enough to catch a
+  # client retry after a timeout, short enough that buying the same item again
+  # an hour later is a second order. A client-supplied key never expires.
+  derived_key_ttl_seconds: 300

@@ -28,6 +28,8 @@ PROGRESS.md
 IDEAS.md
 TODO.md
 submission-answers.md
+plan-gaps.md
+redteam-findings.md
 scratch/
 
 # Editor and OS
@@ -35,3 +37,22 @@ scratch/
 .vscode/
 .DS_Store
 Thumbs.db
+
+.graphifyignore
+
+# graphify knowledge-graph output. Generated, and graph.json embeds file
+# content — the Stop hook rebuilds it for free, so never commit it.
+graphify-out/
+
+# Per-agent config. One directory per coding agent, all of it local machine
+# state — hooks with absolute Windows paths, and skill copies that belong in
+# the user-level skills folder, not in a public repo.
+.claude/
+.codex/
+.agents/
+
+# Linter caches and config. qlty and ruff each write a self-ignoring
+# .gitignore, but qlty's re-includes qlty.toml — excluding the directory here
+# overrides that, since git never descends into an excluded parent.
+.qlty/
+.ruff_cache/

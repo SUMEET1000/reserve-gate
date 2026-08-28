@@ -34,6 +34,12 @@ AI buyer.
         |          BLOCK -> tool result, isError: true       |
         |          HOLD  -> awaits POST /approve/{call_id}   |
         |                                                   |
+        |  the block:  born at boot from policy.yaml         |
+        |              killed by POST /revoke/{block_id}     |
+        |                                                   |
+        |  /approve and /revoke take the ADMIN token,        |
+        |  which the agent is never given                    |
+        |                                                   |
         |  every outcome -> one line in audit.jsonl          |
         +--------------------------------------------------+
                         |
@@ -77,6 +83,16 @@ The block is debited **once**, as a reservation at `create_order`, keyed by the
 returned `order_id`. `capture_payment` for a known order commits that reservation
 and never debits again. An unpaid reservation is released when it times out, so
 orders that are never paid do not permanently consume the block.
+
+`capture_payment` is handed only a `payment_id`, so the gate reads the real
+`order_id`, `amount` and `currency` off Razorpay's payment object rather than
+trusting arguments the caller chose.
+
+A block holds one currency, and a call in any other currency is refused rather
+than converted. Razorpay settles foreign cards, so this is not an India-only
+gate; it is that comparing two currencies needs a live exchange rate inside the
+decision, and a decision resting on a number that moves every second is not
+explainable.
 
 ## What this models, and does not
 

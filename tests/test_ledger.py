@@ -240,6 +240,27 @@ def test_same_payment_on_a_different_reservation_freezes(conn):
     assert ledger.snapshot(conn, CALLER).frozen_at is not None
 
 
+def test_a_different_payment_on_the_same_reservation_freezes(conn):
+    """The mirror of the test above. The no-op is bound to the payment as much
+    as to the reservation: if it were keyed on the reservation alone, a second
+    capture reporting a different payment would return quietly as a duplicate
+    and the ledger would never record that two payments exist for one order.
+    """
+    _, ref = ledger.authorize(conn, order(50000, key="order-E"), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_E", result={"id": "order_E"})
+    cap = Call("capture_payment", CALLER, 50000, "INR",
+               order_id="order_E", payment_id="pay_first", idem_key="capture-E")
+    _, capture = ledger.authorize(conn, cap, CFG, now=NOW)
+    assert ledger.settle_capture(conn, capture, result={"id": "pay_first"}) is True
+
+    assert ledger.settle_capture(conn, capture, result={"id": "pay_second"}) is False
+    # Not debited twice, and the conflict is named rather than swallowed.
+    assert balance(conn) == (50000, 0, 950000)
+    block = ledger.snapshot(conn, CALLER)
+    assert block.frozen_at is not None
+    assert block.freeze_reason == "different payment committed for one reservation"
+
+
 # revocation, idempotency, velocity ------------------------------------------
 
 def test_revocation_refuses_the_next_call_immediately(conn):

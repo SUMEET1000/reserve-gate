@@ -306,6 +306,11 @@ def bearer_auth(app):
     open so an uptime check needs no credential at all.
     """
     async def wrapper(scope, receive, send):
+        # This guard and Starlette's router have to read the same string. Serving
+        # under a root path breaks that: Starlette strips the prefix before
+        # routing while `scope["path"]` here still carries it, so /unfreeze/{id}
+        # would stop matching ADMIN_PATHS and fall through to the agent's own
+        # token. Never pass --root-path, or match on the stripped value instead.
         if scope["type"] == "http" and scope["path"] not in ("/health", "/webhook"):
             name = ("RESERVE_GATE_ADMIN_TOKEN" if scope["path"].startswith(ADMIN_PATHS)
                     else "RESERVE_GATE_TOKEN")

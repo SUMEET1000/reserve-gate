@@ -19,6 +19,20 @@ These commands need no credential and no network. The last command starts the
 buyer and gate over local stdio using a fresh temporary ledger, then shows six
 policy refusals.
 
+The same buyer can be driven by a real model instead of a fixed basket. That
+mode is the demo, never the measurement: a number taken through a model is not
+repeatable.
+
+```console
+pip install -r requirements-llm.txt
+export GEMINI_API_KEY=...            # and RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET
+python -m src.buyer --llm
+```
+
+Nothing loads `.env` for you; export the variables yourself. Set `GEMINI_MODEL`
+if the default id has retired — a model can still appear in `ListModels` after
+it stops answering for new keys.
+
 To regenerate the measured artifacts:
 
 ```console

@@ -95,7 +95,11 @@ async def shop_with_llm(session: ClientSession) -> None:
 
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     response = await client.aio.models.generate_content(
-        model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
+        # gemini-2.5-flash was the default until 29 Aug 2026, when it started
+        # returning 404 "no longer available to new users" on a fresh key. It is
+        # still listed by ListModels, so the listing is not proof of access —
+        # only a real generateContent call is. Re-check before recording.
+        model=os.environ.get("GEMINI_MODEL", "gemini-3.6-flash"),
         contents=LLM_PROMPT,
         # temperature 0 because the video is timed to the second and a model at
         # default temperature adds a preamble or picks a different tool.

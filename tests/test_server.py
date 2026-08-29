@@ -265,3 +265,153 @@ def test_expired_approval_never_reaches_upstream(monkeypatch, tmp_path):
         r = c.post("/approve/" + ref.reservation_id,
                    headers={"Authorization": f"Bearer {ADMIN}"})
     assert r.status_code == 410
+
+
+@pytest.mark.parametrize("kill", [
+    "UPDATE blocks SET revoked_at = '2026-01-01T00:00:00.000000Z'",
+    "UPDATE blocks SET expires_at = '2000-01-01T00:00:00.000000Z'",
+    "UPDATE blocks SET frozen_at = '2026-01-01T00:00:00.000000Z'",
+])
+def test_a_hold_is_not_approvable_once_its_block_dies(monkeypatch, tmp_path, kill):
+    """R4/R2. An approval is a fresh money call, so the block has to be live when
+    it is approved. Checking only the reservation let a revoked or expired block
+    still reach Razorpay through a hold taken while it was alive."""
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "dead-block.db"))
+    monkeypatch.setenv("RESERVE_GATE_TOKEN", TOKEN)
+    monkeypatch.setenv("RESERVE_GATE_ADMIN_TOKEN", ADMIN)
+    caller = server.caller_id()
+    conn = ledger.connect()
+    ledger.init(conn, server.config(), caller_id=caller)
+    _, ref = ledger.authorize(
+        conn, Call("create_order", caller, 300000, "INR", idem_key="dead-block"),
+        server.config())
+    conn.execute(kill)
+    conn.commit()
+    conn.close()
+    server._HOLDS[ref.reservation_id] = (
+        "create_order", {"amount": 300000, "currency": "INR"}, ref)
+
+    async def must_not_run(_tool, _args):
+        raise AssertionError("a dead block reached upstream through an approval")
+
+    monkeypatch.setattr(server, "call_razorpay", must_not_run)
+    app = Starlette(routes=[Route("/approve/{call_id}", server.approve, methods=["POST"])])
+    with TestClient(server.bearer_auth(app)) as c:
+        r = c.post("/approve/" + ref.reservation_id,
+                   headers={"Authorization": f"Bearer {ADMIN}"})
+    assert r.status_code == 410
+    conn = ledger.connect()
+    assert ledger.snapshot(conn, caller).spent == 0
+    conn.close()
+
+
+def test_a_live_block_still_approves(monkeypatch, tmp_path):
+    """The control for the three cases above: nothing killed, the hold executes."""
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "live-block.db"))
+    monkeypatch.setenv("RESERVE_GATE_TOKEN", TOKEN)
+    monkeypatch.setenv("RESERVE_GATE_ADMIN_TOKEN", ADMIN)
+    caller = server.caller_id()
+    conn = ledger.connect()
+    ledger.init(conn, server.config(), caller_id=caller)
+    _, ref = ledger.authorize(
+        conn, Call("create_order", caller, 300000, "INR", idem_key="live-block"),
+        server.config())
+    conn.close()
+    server._HOLDS[ref.reservation_id] = (
+        "create_order", {"amount": 300000, "currency": "INR"}, ref)
+    forwarded = []
+
+    async def upstream(tool, args):
+        forwarded.append(tool)
+        return {"id": "order_live"}
+
+    monkeypatch.setattr(server, "call_razorpay", upstream)
+    app = Starlette(routes=[Route("/approve/{call_id}", server.approve, methods=["POST"])])
+    with TestClient(server.bearer_auth(app)) as c:
+        r = c.post("/approve/" + ref.reservation_id,
+                   headers={"Authorization": f"Bearer {ADMIN}"})
+    assert r.status_code == 200 and forwarded == ["create_order"]
+
+
+def test_two_equal_tokens_refuse_to_serve(monkeypatch):
+    """G12 is privilege separation. Two names for one secret is one credential,
+    and the agent would hold the key to its own approval gate."""
+    monkeypatch.setenv("RESERVE_GATE_TOKEN", "same-secret")
+    monkeypatch.setenv("RESERVE_GATE_ADMIN_TOKEN", "same-secret")
+    monkeypatch.setattr("sys.argv", ["reserve-gate", "--http"])
+    # Stubbed so that a main() which fails to refuse ends the test instead of
+    # binding a port and hanging it.
+    import uvicorn
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    with pytest.raises(SystemExit, match="equal"):
+        server.main()
+
+
+def test_two_different_tokens_are_accepted(monkeypatch):
+    """The control: distinct secrets get past the startup check and only the
+    absence of a real server stops it, never the credential comparison."""
+    monkeypatch.setenv("RESERVE_GATE_TOKEN", TOKEN)
+    monkeypatch.setenv("RESERVE_GATE_ADMIN_TOKEN", ADMIN)
+    monkeypatch.setattr("sys.argv", ["reserve-gate", "--http"])
+    served = []
+    import uvicorn
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: served.append(True))
+    server.main()
+    assert served == [True]
+
+
+def test_a_refused_capture_is_not_handed_back_as_a_success(monkeypatch, tmp_path):
+    """G4. The ledger froze the block and refused the debit, so returning
+    Razorpay's own `status: captured` payload would tell the caller the money
+    moved exactly as asked."""
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "refused-capture.db"))
+    monkeypatch.setenv("RESERVE_GATE_TOKEN", TOKEN)
+    conn = ledger.connect()
+    caller = server.caller_id()
+    ledger.init(conn, server.config(), caller_id=caller)
+    _, ref = ledger.authorize(
+        conn, Call("create_order", caller, 50000, "INR", idem_key="refused-capture"),
+        server.config())
+    ledger.settle_order(conn, ref, order_id="order_refused", result={"id": "order_refused"})
+    conn.close()
+
+    async def upstream(tool, args):
+        if tool == "fetch_payment":
+            return {"id": "pay_expected", "order_id": "order_refused",
+                    "amount": 50000, "currency": "INR"}
+        # Razorpay answers about a different payment than the one reserved.
+        return {"id": "pay_other", "order_id": "order_refused", "amount": 50000,
+                "currency": "INR", "status": "captured"}
+
+    monkeypatch.setattr(server, "call_razorpay", upstream)
+    with pytest.raises(ValueError, match="capture refused"):
+        asyncio.run(server.capture_payment("pay_expected", 50000, "INR"))
+    conn = ledger.connect()
+    snap = ledger.snapshot(conn, caller)
+    conn.close()
+    assert snap.spent == 0 and snap.frozen_at is not None
+
+
+def test_a_matching_capture_is_still_handed_back(monkeypatch, tmp_path):
+    """The control: same shape, the payment Razorpay was asked about."""
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "ok-capture.db"))
+    monkeypatch.setenv("RESERVE_GATE_TOKEN", TOKEN)
+    conn = ledger.connect()
+    caller = server.caller_id()
+    ledger.init(conn, server.config(), caller_id=caller)
+    _, ref = ledger.authorize(
+        conn, Call("create_order", caller, 50000, "INR", idem_key="ok-capture"),
+        server.config())
+    ledger.settle_order(conn, ref, order_id="order_ok", result={"id": "order_ok"})
+    conn.close()
+
+    async def upstream(tool, args):
+        return {"id": "pay_ok", "order_id": "order_ok", "amount": 50000,
+                "currency": "INR", "status": "captured"}
+
+    monkeypatch.setattr(server, "call_razorpay", upstream)
+    result = asyncio.run(server.capture_payment("pay_ok", 50000, "INR"))
+    assert result["id"] == "pay_ok"
+    conn = ledger.connect()
+    assert ledger.snapshot(conn, caller).spent == 50000
+    conn.close()

@@ -163,7 +163,7 @@ def test_capture_after_release_freezes_the_block(client):
 def test_normal_response_wins_and_webhook_is_same_payment_noop(client):
     conn, _ = held_order()
     _, ref = capture_ref(conn)
-    assert ledger.settle_capture(conn, ref, result={"id": "pay_1"}) is True
+    assert ledger.settle_capture(conn, ref, result={"id": "pay_1"}) == "committed"
     r = signed(client, payment_event(), "evt_after_normal")
     assert r.json()["reason"] == "already_committed"
     assert (ledger.snapshot(conn, CALLER).spent, ledger.snapshot(conn, CALLER).held) == (50000, 0)
@@ -174,7 +174,7 @@ def test_webhook_wins_and_normal_response_is_same_payment_noop(client):
     conn, _ = held_order()
     call, ref = capture_ref(conn, key="capture-race")
     assert signed(client, payment_event(), "evt_before_normal").json()["applied"] is True
-    assert ledger.settle_capture(conn, ref, result={"id": "pay_1"}) is False
+    assert ledger.settle_capture(conn, ref, result={"id": "pay_1"}) == "duplicate"
     replay, _ = ledger.authorize(conn, call, server.config())
     assert replay.rule == "R7" and replay.detail["result"]["id"] == "pay_1"
     assert (ledger.snapshot(conn, CALLER).spent, ledger.snapshot(conn, CALLER).held) == (50000, 0)
@@ -185,7 +185,7 @@ def test_same_payment_on_a_different_webhook_reservation_freezes(client):
     conn, _ = held_order(order_id="order_first")
     _, ref = capture_ref(conn, order_id="order_first", payment_id="pay_shared",
                          key="first-capture")
-    assert ledger.settle_capture(conn, ref, result={"id": "pay_shared"}) is True
+    assert ledger.settle_capture(conn, ref, result={"id": "pay_shared"}) == "committed"
     conn.close()
 
     conn, _ = held_order(order_id="order_second")

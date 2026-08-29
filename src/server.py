@@ -111,8 +111,11 @@ async def _settle(conn, tool: str, ref: ledger.Ref, args: dict) -> Any:
 
     if tool == "create_order":
         ledger.settle_order(conn, ref, order_id=result["id"], result=result)
-    else:
-        ledger.settle_capture(conn, ref, result=result)
+    elif ledger.settle_capture(conn, ref, result=result) == "refused":
+        # The ledger froze the block or declined the debit. Returning Razorpay's
+        # payload here would tell the client the money moved as asked.
+        raise ValueError("capture refused: the reply does not match the reserved"
+                         " payment, and the block is frozen for review")
     return result
 
 
@@ -287,7 +290,8 @@ async def approve(request):
     conn = ledger.connect()
     try:
         if not ledger.renew_hold(conn, ref, config().reservation_ttl_minutes):
-            return JSONResponse({"error": "approval expired"}, 410)
+            return JSONResponse({"error": "this hold is no longer approvable: it expired,"
+                                 " or its block was revoked, expired or frozen"}, 410)
         result = await _settle(conn, tool, ref, args)
     except ValueError as e:
         return JSONResponse({"approved": call_id, "error": str(e)}, 502)
@@ -343,6 +347,11 @@ def main() -> None:
     for name in ("RESERVE_GATE_TOKEN", "RESERVE_GATE_ADMIN_TOKEN"):
         if not os.environ.get(name):
             raise SystemExit(f"{name} is not set. Refusing to serve a money endpoint without it.")
+    # G12 is privilege separation, so equal values are one credential wearing two
+    # names and the agent could approve its own spending.
+    if os.environ["RESERVE_GATE_TOKEN"] == os.environ["RESERVE_GATE_ADMIN_TOKEN"]:
+        raise SystemExit("RESERVE_GATE_TOKEN and RESERVE_GATE_ADMIN_TOKEN are equal."
+                         " The admin routes would accept the agent's own credential.")
     import uvicorn
     # 0.0.0.0 is required: Render routes to the container's external interface,
     # and the bearer check above runs in front of every request.

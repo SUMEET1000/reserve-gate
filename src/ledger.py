@@ -411,9 +411,16 @@ def renew_hold(conn: sqlite3.Connection, ref: Ref, ttl_minutes: int, *,
     conn.execute("BEGIN IMMEDIATE")
     try:
         _expire_stale(conn, now)
-        r = conn.execute("SELECT state, expires_at FROM reservations WHERE reservation_id = ?",
-                         (ref.reservation_id,)).fetchone()
-        open_ = bool(r and r["state"] == "held" and parse(r["expires_at"]) > now)
+        # R4/R2: an approval is a fresh money call, so the block has to be live
+        # now, not merely at the moment the hold was taken. Reading the
+        # reservation alone let a revoked or expired block still be spent.
+        r = conn.execute("SELECT r.state, r.expires_at, b.revoked_at, b.frozen_at,"
+                         " b.expires_at AS block_expires_at FROM reservations r"
+                         " JOIN blocks b ON b.block_id = r.block_id"
+                         " WHERE r.reservation_id = ?", (ref.reservation_id,)).fetchone()
+        open_ = bool(r and r["state"] == "held" and parse(r["expires_at"]) > now
+                     and r["revoked_at"] is None and r["frozen_at"] is None
+                     and now < parse(r["block_expires_at"]))
         if open_:
             conn.execute("UPDATE reservations SET expires_at = ? WHERE reservation_id = ?",
                          (iso(now + timedelta(minutes=ttl_minutes)), ref.reservation_id))
@@ -427,12 +434,16 @@ def renew_hold(conn: sqlite3.Connection, ref: Ref, ttl_minutes: int, *,
 
 
 def settle_capture(conn: sqlite3.Connection, ref: Ref, *, result: dict,
-                   now: datetime | None = None) -> bool:
+                   now: datetime | None = None) -> str:
     """Razorpay captured the payment. The hold becomes spend — the one and only
     place the block is actually debited.
 
     B26: this raises rather than swallowing. A capture that happened upstream and
     was not recorded here has to be visible, not silently forgotten.
+
+    Returns "committed", "duplicate" (R7 replay, the first result stands) or
+    "refused". Only the first two mean the caller may hand the reply back; a bool
+    made a frozen conflict indistinguishable from a replay.
     """
     now = now or now_utc()
     conn.execute("BEGIN IMMEDIATE")
@@ -442,6 +453,12 @@ def settle_capture(conn: sqlite3.Connection, ref: Ref, *, result: dict,
         payment_id = result.get("id")
         if not isinstance(payment_id, str) or not payment_id.strip():
             raise RuntimeError("captured result has no payment id")
+        status = result.get("status")
+        if status is not None and status != "captured":
+            conn.execute("COMMIT")
+            audit.record(event="capture_not_captured", reservation_id=ref.reservation_id,
+                         payment_id=payment_id, status=str(status))
+            return "refused"
         other = conn.execute(
             "SELECT reservation_id FROM reservations WHERE payment_id = ?"
             " AND state = 'committed' AND reservation_id <> ?",
@@ -452,21 +469,21 @@ def settle_capture(conn: sqlite3.Connection, ref: Ref, *, result: dict,
             conn.execute("COMMIT")
             audit.record(event="block_frozen", reservation_id=ref.reservation_id,
                          block_id=r["block_id"], reason="payment committed elsewhere")
-            return False
+            return "refused"
         if r and r["state"] == "committed" and r["payment_id"] == payment_id:
             conn.execute("UPDATE idempotency SET result = ? WHERE caller_id = ? AND key = ?",
                          (json.dumps(result), ref.caller_id, ref.key))
             conn.execute("COMMIT")
             audit.record(event="capture_duplicate", reservation_id=ref.reservation_id,
                          payment_id=payment_id, source="normal_response")
-            return False
+            return "duplicate"
         if r and r["state"] == "committed":
             conn.execute("UPDATE blocks SET frozen_at = ?, freeze_reason = ? WHERE block_id = ?",
                          (iso(now), "different payment committed for one reservation", r["block_id"]))
             conn.execute("COMMIT")
             audit.record(event="block_frozen", reservation_id=ref.reservation_id,
                          block_id=r["block_id"], reason="different payment committed")
-            return False
+            return "refused"
         if not r or r["state"] != "held":
             raise RuntimeError(f"reservation {ref.reservation_id} is"
                                f" {r['state'] if r else 'missing'}, not held;"
@@ -489,7 +506,7 @@ def settle_capture(conn: sqlite3.Connection, ref: Ref, *, result: dict,
             conn.execute("COMMIT")
             audit.record(event="block_frozen", reservation_id=ref.reservation_id,
                          block_id=r["block_id"], reason="capture response payment mismatch")
-            return False
+            return "refused"
         conn.execute("UPDATE reservations SET state = 'committed', settled_at = ?, payment_id = ?"
                      " WHERE reservation_id = ?", (iso(now), payment_id, ref.reservation_id))
         conn.execute("UPDATE blocks SET held = held - ?, spent = spent + ? WHERE block_id = ?",
@@ -503,7 +520,7 @@ def settle_capture(conn: sqlite3.Connection, ref: Ref, *, result: dict,
     audit.record(event="debit_committed" if late is None else "debit_committed_late",
                  reservation_id=ref.reservation_id, amount=r["amount"],
                   block_id=r["block_id"], upstream_id=result.get("id"), settled_after=late)
-    return True
+    return "committed"
 
 
 def reconcile_webhook(conn: sqlite3.Connection, event_id: str, event_type: str,

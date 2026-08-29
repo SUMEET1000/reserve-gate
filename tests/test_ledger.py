@@ -216,8 +216,8 @@ def test_committing_the_same_payment_twice_is_a_noop(conn):
     cap = Call(tool="capture_payment", caller_id=CALLER, amount=50000,
                currency="INR", order_id="order_D")
     _, ref2 = ledger.authorize(conn, cap, CFG, now=NOW)
-    assert ledger.settle_capture(conn, ref2, result={"id": "pay_D"}) is True
-    assert ledger.settle_capture(conn, ref2, result={"id": "pay_D"}) is False
+    assert ledger.settle_capture(conn, ref2, result={"id": "pay_D"}) == "committed"
+    assert ledger.settle_capture(conn, ref2, result={"id": "pay_D"}) == "duplicate"
     assert balance(conn) == (50000, 0, 950000)
 
 
@@ -228,14 +228,14 @@ def test_same_payment_on_a_different_reservation_freezes(conn):
     first_call = Call("capture_payment", CALLER, 50000, "INR",
                       order_id="order_first", payment_id="pay_shared", idem_key="first-capture")
     _, first_capture = ledger.authorize(conn, first_call, CFG, now=NOW)
-    assert ledger.settle_capture(conn, first_capture, result={"id": "pay_shared"}) is True
+    assert ledger.settle_capture(conn, first_capture, result={"id": "pay_shared"}) == "committed"
 
     _, second = ledger.authorize(conn, order(50000, key="second-order"), CFG, now=NOW)
     ledger.settle_order(conn, second, order_id="order_second", result={"id": "order_second"})
     second_call = Call("capture_payment", CALLER, 50000, "INR",
                        order_id="order_second", payment_id="pay_shared", idem_key="second-capture")
     _, second_capture = ledger.authorize(conn, second_call, CFG, now=NOW)
-    assert ledger.settle_capture(conn, second_capture, result={"id": "pay_shared"}) is False
+    assert ledger.settle_capture(conn, second_capture, result={"id": "pay_shared"}) == "refused"
     assert balance(conn) == (50000, 50000, 900000)
     assert ledger.snapshot(conn, CALLER).frozen_at is not None
 
@@ -251,9 +251,9 @@ def test_a_different_payment_on_the_same_reservation_freezes(conn):
     cap = Call("capture_payment", CALLER, 50000, "INR",
                order_id="order_E", payment_id="pay_first", idem_key="capture-E")
     _, capture = ledger.authorize(conn, cap, CFG, now=NOW)
-    assert ledger.settle_capture(conn, capture, result={"id": "pay_first"}) is True
+    assert ledger.settle_capture(conn, capture, result={"id": "pay_first"}) == "committed"
 
-    assert ledger.settle_capture(conn, capture, result={"id": "pay_second"}) is False
+    assert ledger.settle_capture(conn, capture, result={"id": "pay_second"}) == "refused"
     # Not debited twice, and the conflict is named rather than swallowed.
     assert balance(conn) == (50000, 0, 950000)
     block = ledger.snapshot(conn, CALLER)
@@ -710,3 +710,31 @@ def test_sql_metacharacters_are_data_and_never_query(db):
         assert (dm.outcome, dm.rule) == (BLOCK, "R3"), dm
     finally:
         conn.close()
+
+
+def test_a_capture_reply_that_says_it_failed_is_not_spending(conn):
+    """R1/G14. Razorpay answered, and its answer says the money did not move.
+    Committing it anyway charged the block for a capture that never happened."""
+    d, ref = ledger.authorize(conn, order(50000), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_F", result={"id": "order_F"})
+    cap = Call(tool="capture_payment", caller_id=CALLER, amount=50000,
+               currency="INR", order_id="order_F")
+    _, ref2 = ledger.authorize(conn, cap, CFG, now=NOW)
+    outcome = ledger.settle_capture(
+        conn, ref2, result={"id": "pay_F", "status": "failed"}, now=NOW)
+    assert outcome == "refused"
+    # Nothing spent, and the hold stays until its TTL rather than being handed
+    # back on a reply we did not fully trust.
+    assert balance(conn) == (0, 50000, 950000)
+
+
+def test_a_capture_reply_that_says_captured_still_commits(conn):
+    """The control: the same shape with the status Razorpay really sends."""
+    d, ref = ledger.authorize(conn, order(50000), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_G", result={"id": "order_G"})
+    cap = Call(tool="capture_payment", caller_id=CALLER, amount=50000,
+               currency="INR", order_id="order_G")
+    _, ref2 = ledger.authorize(conn, cap, CFG, now=NOW)
+    assert ledger.settle_capture(
+        conn, ref2, result={"id": "pay_G", "status": "captured"}, now=NOW) == "committed"
+    assert balance(conn) == (50000, 0, 950000)

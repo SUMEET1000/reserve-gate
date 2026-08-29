@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS blocks (
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   revoked_at TEXT,
+  frozen_at  TEXT,
+  freeze_reason TEXT,
   CHECK (spent >= 0 AND held >= 0),
   -- The plan's G17 says CHECK (spent <= reserved). With two-phase debit that is
   -- not enough: it would let held grow past the block. The invariant the ledger
@@ -49,7 +51,8 @@ CREATE TABLE IF NOT EXISTS reservations (
   state      TEXT NOT NULL CHECK (state IN ('held', 'committed', 'released')),
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
-  settled_at TEXT
+  settled_at TEXT,
+  payment_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS idempotency (
@@ -60,6 +63,7 @@ CREATE TABLE IF NOT EXISTS idempotency (
   result     TEXT,                 -- NULL while the first call is still running
   created_at TEXT NOT NULL,
   expires_at TEXT,             -- NULL for a client key; set for a derived one
+  reservation_id TEXT,
   -- Composite, not `key` alone. A client picks its own key, so a bare primary
   -- key on it is one namespace shared by every caller: the second caller to use
   -- "order-1" would be handed the first caller's result, and a caller could
@@ -73,7 +77,26 @@ CREATE TABLE IF NOT EXISTS money_calls (
   tool      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS money_calls_window ON money_calls(caller_id, ts);
+
+CREATE TABLE IF NOT EXISTS webhook_events (
+  event_id   TEXT PRIMARY KEY,
+  received_at TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  effect     TEXT NOT NULL,
+  reason     TEXT NOT NULL
+);
 """
+
+MIGRATIONS = (
+    ("frozen_at", "PRAGMA table_info(blocks)",
+     "ALTER TABLE blocks ADD COLUMN frozen_at TEXT"),
+    ("freeze_reason", "PRAGMA table_info(blocks)",
+     "ALTER TABLE blocks ADD COLUMN freeze_reason TEXT"),
+    ("payment_id", "PRAGMA table_info(reservations)",
+     "ALTER TABLE reservations ADD COLUMN payment_id TEXT"),
+    ("reservation_id", "PRAGMA table_info(idempotency)",
+     "ALTER TABLE idempotency ADD COLUMN reservation_id TEXT"),
+)
 
 
 @dataclass(frozen=True)
@@ -133,7 +156,8 @@ def args_hash(call: Call) -> str:
                             "amount": call.amount,
                             "currency": call.currency.upper()
                             if isinstance(call.currency, str) else call.currency,
-                            "order_id": call.order_id}, sort_keys=True)
+                            "order_id": call.order_id, "payment_id": call.payment_id},
+                           sort_keys=True)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
@@ -156,6 +180,9 @@ def connect(db: str | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=10000")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
+    for column, check, statement in MIGRATIONS:
+        if column not in {row["name"] for row in conn.execute(check)}:
+            conn.execute(statement)
     return conn
 
 
@@ -193,7 +220,8 @@ def snapshot(conn: sqlite3.Connection, caller_id: str) -> Block | None:
         return None
     return Block(block_id=row["block_id"], caller_id=row["caller_id"], currency=row["currency"],
                  reserved=row["reserved"], spent=row["spent"], held=row["held"],
-                 expires_at=parse(row["expires_at"]), revoked_at=parse(row["revoked_at"]))
+                 expires_at=parse(row["expires_at"]), revoked_at=parse(row["revoked_at"]),
+                 frozen_at=parse(row["frozen_at"]), freeze_reason=row["freeze_reason"])
 
 
 def _expire_stale(conn: sqlite3.Connection, now: datetime) -> None:
@@ -243,7 +271,7 @@ def _load_state(conn: sqlite3.Connection, call: Call, key: str, now: datetime,
             reservation = Reservation(reservation_id=r["reservation_id"], block_id=r["block_id"],
                                       amount=r["amount"], currency=r["currency"],
                                       state=r["state"], expires_at=parse(r["expires_at"]),
-                                      order_id=r["order_id"])
+                                      order_id=r["order_id"], payment_id=r["payment_id"])
     return State(block=block, velocity_count=velocity, replay=replay,
                  in_flight=in_flight, conflict=conflict, reservation=reservation)
 
@@ -294,13 +322,15 @@ def authorize(conn: sqlite3.Connection, call: Call, config: Config, *,
             conn.execute("INSERT INTO money_calls (ts, caller_id, tool) VALUES (?, ?, ?)",
                          (iso(now), call.caller_id, call.tool))
         if d.outcome in (ALLOW, HOLD) and state.replay is None:
+            reservation_id = (secrets.token_urlsafe(16) if call.tool == "create_order"
+                              else state.reservation.reservation_id)
             conn.execute(
-                "INSERT INTO idempotency (key, caller_id, tool, args_hash, created_at, expires_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO idempotency (key, caller_id, tool, args_hash, created_at, expires_at,"
+                " reservation_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (key, call.caller_id, call.tool, args_hash(call), iso(now),
-                 iso(now + timedelta(seconds=config.derived_key_ttl_seconds)) if derived else None))
+                 iso(now + timedelta(seconds=config.derived_key_ttl_seconds)) if derived else None,
+                 reservation_id))
             if call.tool == "create_order":
-                reservation_id = secrets.token_urlsafe(16)
                 conn.execute(
                     "INSERT INTO reservations (reservation_id, block_id, amount, currency,"
                     " state, created_at, expires_at) VALUES (?, ?, ?, ?, 'held', ?, ?)",
@@ -311,8 +341,10 @@ def authorize(conn: sqlite3.Connection, call: Call, config: Config, *,
                 # the hold is never approved.
                 conn.execute("UPDATE blocks SET held = held + ? WHERE block_id = ?",
                              (call.amount, state.block.block_id))
-            else:
-                reservation_id = state.reservation.reservation_id
+            elif call.payment_id:
+                conn.execute("UPDATE reservations SET payment_id = ? WHERE reservation_id = ?"
+                             " AND (payment_id IS NULL OR payment_id = ?)",
+                             (call.payment_id, reservation_id, call.payment_id))
             ref = Ref(reservation_id=reservation_id, key=key, caller_id=call.caller_id)
         conn.execute("COMMIT")
     except Exception as e:
@@ -372,8 +404,30 @@ def release(conn: sqlite3.Connection, ref: Ref, *, reason: str,
     audit.record(event="reservation_released", reservation_id=ref.reservation_id, reason=reason)
 
 
+def renew_hold(conn: sqlite3.Connection, ref: Ref, ttl_minutes: int, *,
+               now: datetime | None = None) -> bool:
+    """Claim an unexpired HOLD for one approval attempt and extend its lease."""
+    now = now or now_utc()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _expire_stale(conn, now)
+        r = conn.execute("SELECT state, expires_at FROM reservations WHERE reservation_id = ?",
+                         (ref.reservation_id,)).fetchone()
+        open_ = bool(r and r["state"] == "held" and parse(r["expires_at"]) > now)
+        if open_:
+            conn.execute("UPDATE reservations SET expires_at = ? WHERE reservation_id = ?",
+                         (iso(now + timedelta(minutes=ttl_minutes)), ref.reservation_id))
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    audit.record(event="hold_claimed" if open_ else "hold_expired",
+                 reservation_id=ref.reservation_id)
+    return open_
+
+
 def settle_capture(conn: sqlite3.Connection, ref: Ref, *, result: dict,
-                   now: datetime | None = None) -> None:
+                   now: datetime | None = None) -> bool:
     """Razorpay captured the payment. The hold becomes spend — the one and only
     place the block is actually debited.
 
@@ -383,8 +437,36 @@ def settle_capture(conn: sqlite3.Connection, ref: Ref, *, result: dict,
     now = now or now_utc()
     conn.execute("BEGIN IMMEDIATE")
     try:
-        r = conn.execute("SELECT block_id, amount, state FROM reservations"
+        r = conn.execute("SELECT block_id, amount, state, payment_id FROM reservations"
                          " WHERE reservation_id = ?", (ref.reservation_id,)).fetchone()
+        payment_id = result.get("id")
+        if not isinstance(payment_id, str) or not payment_id.strip():
+            raise RuntimeError("captured result has no payment id")
+        other = conn.execute(
+            "SELECT reservation_id FROM reservations WHERE payment_id = ?"
+            " AND state = 'committed' AND reservation_id <> ?",
+            (payment_id, ref.reservation_id)).fetchone()
+        if r and other:
+            conn.execute("UPDATE blocks SET frozen_at = ?, freeze_reason = ? WHERE block_id = ?",
+                         (iso(now), "payment committed to another reservation", r["block_id"]))
+            conn.execute("COMMIT")
+            audit.record(event="block_frozen", reservation_id=ref.reservation_id,
+                         block_id=r["block_id"], reason="payment committed elsewhere")
+            return False
+        if r and r["state"] == "committed" and r["payment_id"] == payment_id:
+            conn.execute("UPDATE idempotency SET result = ? WHERE caller_id = ? AND key = ?",
+                         (json.dumps(result), ref.caller_id, ref.key))
+            conn.execute("COMMIT")
+            audit.record(event="capture_duplicate", reservation_id=ref.reservation_id,
+                         payment_id=payment_id, source="normal_response")
+            return False
+        if r and r["state"] == "committed":
+            conn.execute("UPDATE blocks SET frozen_at = ?, freeze_reason = ? WHERE block_id = ?",
+                         (iso(now), "different payment committed for one reservation", r["block_id"]))
+            conn.execute("COMMIT")
+            audit.record(event="block_frozen", reservation_id=ref.reservation_id,
+                         block_id=r["block_id"], reason="different payment committed")
+            return False
         if not r or r["state"] != "held":
             raise RuntimeError(f"reservation {ref.reservation_id} is"
                                f" {r['state'] if r else 'missing'}, not held;"
@@ -401,8 +483,15 @@ def settle_capture(conn: sqlite3.Connection, ref: Ref, *, result: dict,
             late = f"expires_at={b['expires_at']}"
         else:
             late = None
-        conn.execute("UPDATE reservations SET state = 'committed', settled_at = ?"
-                     " WHERE reservation_id = ?", (iso(now), ref.reservation_id))
+        if r["payment_id"] is not None and r["payment_id"] != payment_id:
+            conn.execute("UPDATE blocks SET frozen_at = ?, freeze_reason = ? WHERE block_id = ?",
+                         (iso(now), "capture response payment mismatch", r["block_id"]))
+            conn.execute("COMMIT")
+            audit.record(event="block_frozen", reservation_id=ref.reservation_id,
+                         block_id=r["block_id"], reason="capture response payment mismatch")
+            return False
+        conn.execute("UPDATE reservations SET state = 'committed', settled_at = ?, payment_id = ?"
+                     " WHERE reservation_id = ?", (iso(now), payment_id, ref.reservation_id))
         conn.execute("UPDATE blocks SET held = held - ?, spent = spent + ? WHERE block_id = ?",
                      (r["amount"], r["amount"], r["block_id"]))
         conn.execute("UPDATE idempotency SET result = ? WHERE caller_id = ? AND key = ?",
@@ -413,7 +502,99 @@ def settle_capture(conn: sqlite3.Connection, ref: Ref, *, result: dict,
         raise
     audit.record(event="debit_committed" if late is None else "debit_committed_late",
                  reservation_id=ref.reservation_id, amount=r["amount"],
-                 block_id=r["block_id"], upstream_id=result.get("id"), settled_after=late)
+                  block_id=r["block_id"], upstream_id=result.get("id"), settled_after=late)
+    return True
+
+
+def reconcile_webhook(conn: sqlite3.Connection, event_id: str, event_type: str,
+                      payment: dict | None, *, now: datetime | None = None) -> dict:
+    """Atomically deduplicate and reconcile one authenticated Razorpay event."""
+    now = now or now_utc()
+    conn.execute("BEGIN IMMEDIATE")
+    block_id = reservation_id = None
+    frozen = False
+    try:
+        try:
+            conn.execute("INSERT INTO webhook_events"
+                         " (event_id, received_at, event_type, effect, reason)"
+                         " VALUES (?, ?, ?, 'NOOP', 'processing')",
+                         (event_id, iso(now), event_type))
+        except sqlite3.IntegrityError:
+            if conn.execute("SELECT 1 FROM webhook_events WHERE event_id = ?",
+                            (event_id,)).fetchone() is None:
+                raise
+            conn.execute("COMMIT")
+            result = {"accepted": True, "applied": False, "reason": "duplicate_event",
+                      "effect": "NOOP"}
+            audit.record(event="webhook_duplicate", event_id=event_id, event_type=event_type)
+            return result
+
+        effect, reason = "NOOP", "unsupported_event"
+        if event_type == "payment.captured":
+            entity = payment if isinstance(payment, dict) else {}
+            payment_id, order_id = entity.get("id"), entity.get("order_id")
+            if not isinstance(order_id, str) or not order_id.strip():
+                effect, reason = "REJECT", "invalid_payment"
+            else:
+                r = conn.execute(
+                    "SELECT r.*, b.frozen_at FROM reservations r"
+                    " JOIN blocks b ON b.block_id = r.block_id WHERE r.order_id = ?",
+                    (order_id,)).fetchone()
+                if r is None:
+                    reason = "unknown_order"
+                else:
+                    block_id, reservation_id = r["block_id"], r["reservation_id"]
+                    other = (conn.execute(
+                        "SELECT 1 FROM reservations WHERE payment_id = ?"
+                        " AND state = 'committed' AND reservation_id <> ?",
+                        (payment_id, r["reservation_id"])).fetchone()
+                        if isinstance(payment_id, str) and payment_id.strip() else None)
+                    mismatch = (not isinstance(payment_id, str) or not payment_id.strip()
+                                or (r["payment_id"] is not None and r["payment_id"] != payment_id)
+                                or type(entity.get("amount")) is not int
+                                or entity.get("amount") != r["amount"]
+                                or not isinstance(entity.get("currency"), str)
+                                or entity["currency"].upper() != r["currency"].upper()
+                                or entity.get("status") != "captured")
+                    conflict = r["state"] == "committed" and r["payment_id"] != payment_id
+                    late = r["state"] == "released"
+                    if mismatch or conflict or late or other:
+                        reason = ("payment_mismatch" if mismatch else
+                                  "payment_already_committed_elsewhere" if other else
+                                  "different_payment" if conflict else "late_capture")
+                        conn.execute("UPDATE blocks SET frozen_at = ?, freeze_reason = ?"
+                                     " WHERE block_id = ? AND frozen_at IS NULL",
+                                     (iso(now), reason, r["block_id"]))
+                        effect, frozen = "REJECT", True
+                    elif r["state"] == "committed":
+                        reason = "already_committed"
+                    elif r["frozen_at"] is not None:
+                        effect, reason = "REJECT", "block_frozen"
+                    else:
+                        result = {"id": payment_id, "order_id": order_id,
+                                  "amount": entity["amount"], "currency": entity["currency"],
+                                  "status": entity["status"]}
+                        conn.execute("UPDATE reservations SET state = 'committed', settled_at = ?,"
+                                     " payment_id = ? WHERE reservation_id = ? AND state = 'held'",
+                                     (iso(now), payment_id, r["reservation_id"]))
+                        conn.execute("UPDATE blocks SET held = held - ?, spent = spent + ?"
+                                     " WHERE block_id = ?", (r["amount"], r["amount"], r["block_id"]))
+                        conn.execute("UPDATE idempotency SET result = ? WHERE reservation_id = ?"
+                                     " AND tool = 'capture_payment' AND result IS NULL",
+                                     (json.dumps(result), r["reservation_id"]))
+                        effect, reason = "APPLY", "capture_applied"
+        conn.execute("UPDATE webhook_events SET effect = ?, reason = ? WHERE event_id = ?",
+                     (effect, reason, event_id))
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+    audit.record(event="webhook_" + effect.lower(), event_id=event_id,
+                 event_type=event_type, reason=reason, block_id=block_id,
+                 reservation_id=reservation_id, frozen=frozen)
+    return {"accepted": True, "applied": effect == "APPLY", "reason": reason,
+            "effect": effect}
 
 
 def revoke(conn: sqlite3.Connection, block_id: str, *, now: datetime | None = None) -> bool:
@@ -432,4 +613,22 @@ def revoke(conn: sqlite3.Connection, block_id: str, *, now: datetime | None = No
         conn.execute("ROLLBACK")
         raise
     audit.record(event="block_revoked", block_id=block_id, changed=changed)
+    return changed
+
+
+def unfreeze(conn: sqlite3.Connection, block_id: str) -> bool | None:
+    """Clear only reconciliation freeze state. Unknown blocks return None."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if conn.execute("SELECT 1 FROM blocks WHERE block_id = ?", (block_id,)).fetchone() is None:
+            conn.execute("COMMIT")
+            return None
+        cur = conn.execute("UPDATE blocks SET frozen_at = NULL, freeze_reason = NULL"
+                           " WHERE block_id = ? AND frozen_at IS NOT NULL", (block_id,))
+        changed = cur.rowcount > 0
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    audit.record(event="block_unfrozen", block_id=block_id, changed=changed)
     return changed

@@ -19,7 +19,7 @@ reads only `ALLOW`.
 | R0 currency | 14 | 1 | 0 | yes | ALLOW, G4 |
 | R1 block cap | 0 | 4 | 0 | yes | G4 |
 | R2 expiry | 3 | 1 | 0 | yes | ALLOW, R3 |
-| R3 already captured | 1 | 0 | 0 | yes | ALLOW |
+| R3 already captured | 0 | 1 | 0 | yes | R0 |
 | R3 no reservation | 0 | 15 | 0 | yes | G4 |
 | R4 revocation | 4 | 0 | 0 | yes | ALLOW |
 | R5 per-call cap | 0 | 1 | 0 | yes | R1 |
@@ -28,4 +28,5 @@ reads only `ALLOW`.
 | R7 in flight | 0 | 3 | 0 | yes | G4 |
 | G15 tool allowlist | 0 | 4 | 0 | yes | G4 |
 | G16 key conflict | 0 | 4 | 0 | yes | G4, R0 |
+| G4 frozen block | 1 | 0 | 0 | yes | ALLOW |
 | approval hold | 5 | 0 | 0 | yes | ALLOW |

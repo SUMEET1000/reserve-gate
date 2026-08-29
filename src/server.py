@@ -24,10 +24,11 @@ from mcp.server.transport_security import TransportSecuritySettings
 from . import audit, ledger
 from .policy import HOLD, Call, load_config
 from .upstream import UpstreamError, call_razorpay
+from .webhook import handle as handle_webhook
 
 # Paths the operator uses and the agent must never reach. Checked against
 # RESERVE_GATE_ADMIN_TOKEN, a different secret from the one the agent holds.
-ADMIN_PATHS = ("/approve/", "/revoke/", "/block")
+ADMIN_PATHS = ("/approve/", "/revoke/", "/unfreeze/", "/block")
 
 # call_id -> (tool, upstream args, Ref). A HOLD parks here until POST /approve.
 # ponytail: in memory, so a restart forgets the pending approvals. The hold
@@ -179,13 +180,22 @@ async def capture_payment(payment_id: str, amount: int, currency: str = "INR",
     # aim a capture at somebody else's order. It is a read, so R6 does not count
     # it, and a failure to resolve it is a refusal rather than a guess.
     try:
-        order_id = (await call_razorpay("fetch_payment", {"payment_id": payment_id}))["order_id"]
+        payment = await call_razorpay("fetch_payment", {"payment_id": payment_id})
+        order_id = payment["order_id"]
+        upstream_amount, upstream_currency = payment["amount"], payment["currency"]
     except (UpstreamError, KeyError, TypeError) as e:
         audit.record(event="block", rule="G4", tool="capture_payment",
                      reason=f"could not resolve the order for {payment_id}: {e}")
         raise ValueError(f"BLOCK [G4] cannot resolve the order for {payment_id}: {e}") from None
+    if (type(upstream_amount) is not int or upstream_amount != amount
+            or not isinstance(upstream_currency, str)
+            or upstream_currency.upper() != currency.upper()):
+        audit.record(event="block", rule="R0", tool="capture_payment", payment_id=payment_id,
+                     reason="capture arguments do not match Razorpay's payment object")
+        raise ValueError("BLOCK [R0] capture amount or currency does not match the payment")
     return await _gated(Call(tool="capture_payment", caller_id=caller_id(), amount=amount,
-                             currency=currency, order_id=order_id, idem_key=idempotency_key),
+                             currency=currency, order_id=order_id, payment_id=payment_id,
+                             idem_key=idempotency_key),
                         {"payment_id": payment_id, "amount": amount, "currency": currency})
 
 
@@ -214,6 +224,11 @@ async def health(_request):
     })
 
 
+@mcp.custom_route("/webhook", ["POST"])
+async def webhook(request):
+    return await handle_webhook(request)
+
+
 @mcp.custom_route("/block", ["GET"])
 async def block(_request):
     """The agent's block and what is left of it. Behind the admin token because
@@ -227,8 +242,10 @@ async def block(_request):
         conn.close()
     return JSONResponse({"block_id": b.block_id, "currency": b.currency,
                          "reserved": b.reserved, "spent": b.spent, "held": b.held,
-                         "available": b.available, "expires_at": ledger.iso(b.expires_at),
-                         "revoked_at": ledger.iso(b.revoked_at) if b.revoked_at else None})
+                          "available": b.available, "expires_at": ledger.iso(b.expires_at),
+                          "revoked_at": ledger.iso(b.revoked_at) if b.revoked_at else None,
+                          "frozen_at": ledger.iso(b.frozen_at) if b.frozen_at else None,
+                          "freeze_reason": b.freeze_reason})
 
 
 @mcp.custom_route("/revoke/{block_id}", ["POST"])
@@ -244,6 +261,19 @@ async def revoke(request):
     return JSONResponse({"block_id": block_id, "revoked": changed}, 200 if changed else 404)
 
 
+@mcp.custom_route("/unfreeze/{block_id}", ["POST"])
+async def unfreeze(request):
+    block_id = request.path_params["block_id"]
+    conn = ledger.connect()
+    try:
+        changed = ledger.unfreeze(conn, block_id)
+    finally:
+        conn.close()
+    if changed is None:
+        return JSONResponse({"error": "block not found"}, 404)
+    return JSONResponse({"block_id": block_id, "unfrozen": changed})
+
+
 @mcp.custom_route("/approve/{call_id}", ["POST"])
 async def approve(request):
     """Release one HOLD, and only ever once: the pending call is popped, so a
@@ -256,6 +286,8 @@ async def approve(request):
     audit.record(event="hold_approved", call_id=call_id, tool=tool)
     conn = ledger.connect()
     try:
+        if not ledger.renew_hold(conn, ref, config().reservation_ttl_minutes):
+            return JSONResponse({"error": "approval expired"}, 410)
         result = await _settle(conn, tool, ref, args)
     except ValueError as e:
         return JSONResponse({"approved": call_id, "error": str(e)}, 502)
@@ -268,13 +300,13 @@ def bearer_auth(app):
     """Reject every HTTP request that does not present the right credential.
 
     Two secrets, not one. The agent holds RESERVE_GATE_TOKEN to reach /mcp;
-    /approve, /revoke and /block need RESERVE_GATE_ADMIN_TOKEN, which it is
+    /approve, /revoke, /unfreeze and /block need RESERVE_GATE_ADMIN_TOKEN, which it is
     never given. Guarding the human approval gate with the token the gated party
     already holds would let the agent approve its own spending (G12). /health is
     open so an uptime check needs no credential at all.
     """
     async def wrapper(scope, receive, send):
-        if scope["type"] == "http" and scope["path"] != "/health":
+        if scope["type"] == "http" and scope["path"] not in ("/health", "/webhook"):
             name = ("RESERVE_GATE_ADMIN_TOKEN" if scope["path"].startswith(ADMIN_PATHS)
                     else "RESERVE_GATE_TOKEN")
             expected = os.environ.get(name) or ""

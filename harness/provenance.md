@@ -1,7 +1,7 @@
 # Provenance — where every attack class comes from
 
 A test set written by the person being tested proves very little. This file
-exists so each of the 130 cases in `cases.jsonl` can be traced to something
+exists so each of the 150 cases in `cases.jsonl` can be traced to something
 outside this repository, and so the places where that trace is weak are named
 rather than hidden.
 
@@ -18,6 +18,7 @@ the experiment that would settle it named. Untagged reads as assumed.
 | 30 | `block_cap_expiry` | NPCI UPI Reserve Pay: issuer maximum block ₹10,000, 90-day validity. Razorpay API: `amount` is "the smallest currency sub-unit", minimum 100 | `[vendor-doc: NPCI circular coverage; razorpay.com/docs]` |
 | 25 | `idempotency_replay` | Razorpay webhook docs: duplicate delivery is "expected behaviour"; ordering "may not be followed at all times" | `[vendor-doc: razorpay.com/docs/webhooks/validate-test]` |
 | 25 | `revocation_runaway` | Razorpay agentic-payments blog, 20 Feb 2026: users "retain full visibility, control, and the ability to revoke consent instantly". OWASP GenAI **LLM06:2026 Unbounded Consumption** (denial of wallet) | `[vendor-doc: razorpay.com/blog/agentic-payments-and-npci; genai.owasp.org]` |
+| 20 | `webhook_reconciliation` | Razorpay webhook documentation: HMAC-SHA256 over the raw body, duplicate delivery is expected, dedupe uses `x-razorpay-event-id`, and delivery order is not guaranteed | `[vendor-doc: razorpay.com/docs/webhooks/validate-test]` |
 | 10 | `negative_control` | None, deliberately. These are the calls that **must** pass. A gate that refuses everything scores a perfect false-allow and is worthless; these are what stop that reading | — |
 
 The threat the whole project is a control for is OWASP GenAI **LLM03:2026
@@ -68,28 +69,22 @@ edge, and the README says so.
 
 ## The bias problem, and what actually answers it
 
-The B01–B33 bypass table these cases are built from was written by Claude
-alongside the build plan. Parts of it came from outside — B25–B33 came from a
-Gemini 3.1 Pro review, and `plan-gaps.md`'s eight findings came from GPT-5.6-sol
-reading `src/` in an isolated context with no plan — but most of the table shares
-an author with the code. A cited source for the *class* does not make the *case*
-independent.
+The bypass cases were built alongside the code. A cited source for the *class*
+does not make the *case* independent, so provenance alone cannot establish that
+the suite would notice a broken control.
 
 Three separate things fix three separate problems, and only two of them are
 about who wrote what:
 
 1. **"The cases were written to pass."** Answered by `harness/mutate.py`, not by
    provenance. It deletes each rule from a copy of `decide()` and re-scores the
-   same 130 cases; every rule has to be noticed. That control does not care who
+   same 150 cases; every rule has to be noticed. That control does not care who
    wrote the cases, which is the point — asking the author whether the tests are
    weak is circular, and removing the thing under test is not.
 2. **"The payloads were invented here."** Partly answered above, and honestly
    flagged as unfinished.
-3. **"A whole attack class is missing and nobody thought of it."** Neither
-   provenance nor mutation testing can find this. Only an outside mind can, and
-   it is scheduled: a short blind pass, isolated context, no build plan, asking
-   only *"name an attack class absent from these 130"*. Not "write the cases" —
-   that is the expensive half.
+3. **"A whole attack class is missing."** Neither provenance nor mutation
+   testing can prove completeness. This remains an explicit limit.
 
 ## The audit chain's limit
 
@@ -103,9 +98,3 @@ both files are committed, so git holds a value a forged log no longer matches. A
 considered and rejected — the key would live beside the process writing the log, and a `verify()`
 that needs a secret is one a reader with a clone cannot run, which is the only reason the log is
 here.
-
-## Not covered today
-
-The 20 webhook cases (signature forgery, replay, out-of-order delivery) are not
-here. `src/webhook.py` does not exist yet; the cases land beside it and this
-table grows to 150 then.

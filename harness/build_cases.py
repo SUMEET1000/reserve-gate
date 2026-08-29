@@ -2,7 +2,7 @@
 
 The boundary sweeps are mechanical - an amount at the cap, one paise over, one
 under, the expiry instant itself - so they are generated rather than typed. A
-typo in one of 130 hand-written JSON lines is a silently wrong expectation, and
+typo in one of 150 hand-written JSON lines is a silently wrong expectation, and
 a wrong expectation is worse than a missing case.
 
 `cases.jsonl` is the artefact a reader inspects; this file is where it comes
@@ -32,6 +32,7 @@ OWASP06 = "OWASP GenAI LLM06:2026 Unbounded Consumption"
 NPCI = "NPCI UPI Reserve Pay: issuer max block, 90-day validity, multiple debits"
 RZP_REVOKE = "Razorpay agentic-payments blog: revoke consent instantly"
 RZP_DUP = "Razorpay webhook docs: duplicate delivery is expected behaviour"
+RZP_WEBHOOK = "Razorpay webhook docs: raw-body HMAC, event-id dedupe, unordered delivery"
 RZP_AMT = "Razorpay API: amount is the smallest currency sub-unit; minimum 100"
 
 
@@ -60,6 +61,13 @@ def held(amount, oid="setup", n=1):
     """Setup: n orders created and bound, so their amounts sit held in the block."""
     return [{"call": order(amount, key="setup-key"), "settle": oid,
              "repeat": n, "at": 0}]
+
+
+def webhook_case(cid, effect, note, rule="", **spec):
+    CASES.append({"id": cid, "class": "webhook_reconciliation", "source": RZP_WEBHOOK,
+                  "webhook": spec, "expect": {
+                      "outcome": "BLOCK" if effect == "REJECT" else "ALLOW",
+                      "rule": rule, "effect": effect}, "note": note})
 
 
 # ---------------------------------------------------------------- injection
@@ -334,6 +342,49 @@ for cid, tool in [("G15-refund", "create_refund"), ("G15-link", "create_payment_
     case(cid, "revocation_runaway", "MCP spec: scope minimisation, default-deny",
          {"tool": tool, "amount": 150000, "currency": "INR"}, "BLOCK", "G15",
          "not on the allowlist, including tools invented after this was written")
+
+# ------------------------------------------------ webhook reconciliation
+webhook_case("WH-missing-signature", "REJECT", "an unsigned body never reaches JSON parsing",
+             "G10", signature="missing")
+webhook_case("WH-wrong-signature", "REJECT", "a signature made with another secret", "G10",
+             signature="wrong")
+webhook_case("WH-reserialized", "REJECT", "the signature covers exact raw bytes, not equivalent JSON",
+             "G10", signature="reserialized")
+webhook_case("WH-malformed", "REJECT", "signed malformed JSON is a 400", "G10", body="malformed")
+webhook_case("WH-missing-event-id", "REJECT", "dedupe needs Razorpay's event id header", "G10",
+             event_id=None)
+webhook_case("WH-authorized", "NOOP", "payment.authorized cannot move money",
+             event="payment.authorized")
+webhook_case("WH-failed", "NOOP", "an out-of-order payment.failed cannot regress state",
+             event="payment.failed", setup="held")
+webhook_case("WH-unknown-order", "NOOP", "a signed capture for an unknown order is audited only",
+             order_id="order_unknown")
+webhook_case("WH-apply", "APPLY", "the first valid capture commits one held reservation",
+             setup="held")
+webhook_case("WH-duplicate-three", "NOOP", "the second and third delivery are event-id no-ops",
+             setup="held", deliveries=3)
+webhook_case("WH-out-of-order-capture", "APPLY",
+             "authorized and failed arrive first; captured still commits once", setup="held",
+             before=["payment.authorized", "payment.failed"])
+webhook_case("WH-normal-wins", "NOOP", "the normal capture response committed first",
+             setup="normal_committed")
+webhook_case("WH-webhook-wins", "APPLY", "the webhook commits while the normal response is in flight",
+             setup="capture_pending", finish_normal=True)
+webhook_case("WH-wrong-amount", "REJECT", "a signed amount mismatch freezes the block", "G4",
+             setup="capture_pending", amount=50001)
+webhook_case("WH-wrong-currency", "REJECT", "a signed currency mismatch freezes the block", "G4",
+             setup="capture_pending", currency="USD")
+webhook_case("WH-wrong-payment", "REJECT", "a different payment id freezes the block", "G4",
+             setup="capture_pending", payment_id="pay_other")
+webhook_case("WH-wrong-status", "REJECT", "a captured event must carry captured status", "G4",
+             setup="capture_pending", status="authorized")
+webhook_case("WH-late-capture", "REJECT", "capture after release freezes instead of restoring money",
+             "G4", setup="released")
+webhook_case("WH-frozen-spend", "REJECT", "a frozen block refuses the next money call under G4",
+             "G4", setup="capture_pending", amount=50001, after_call=True)
+webhook_case("WH-different-committed", "REJECT",
+             "a differently committed payment freezes the block", "G4",
+             setup="committed_other", payment_id="pay_other")
 
 # ----------------------------------------------------- negative controls
 # These MUST be allowed. A gate that refuses everything scores a perfect

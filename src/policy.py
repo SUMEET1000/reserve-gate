@@ -64,6 +64,7 @@ class Call:
     amount: int | None = None
     currency: str | None = None
     order_id: str | None = None   # capture_payment only
+    payment_id: str | None = None
     idem_key: str | None = None
 
 
@@ -77,6 +78,8 @@ class Block:
     held: int           # reserved against an order that is not captured yet
     expires_at: datetime
     revoked_at: datetime | None = None
+    frozen_at: datetime | None = None
+    freeze_reason: str | None = None
 
     @property
     def available(self) -> int:
@@ -92,6 +95,7 @@ class Reservation:
     state: str          # held | committed | released
     expires_at: datetime
     order_id: str | None = None
+    payment_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -159,6 +163,10 @@ def _decide(call: Call, state: State, config: Config, now: datetime) -> Decision
     # the caller can present.
     if block.caller_id != call.caller_id:
         return Decision(BLOCK, "G2", "block belongs to a different caller")
+    if block.frozen_at is not None:
+        return Decision(BLOCK, "G4", "block frozen after a reconciliation conflict",
+                        {"block_id": block.block_id, "frozen_at": block.frozen_at.isoformat(),
+                         "reason": block.freeze_reason})
     if block.revoked_at is not None:
         return Decision(BLOCK, "R4", "block revoked",
                         {"block_id": block.block_id, "revoked_at": block.revoked_at.isoformat()})
@@ -256,6 +264,8 @@ def _decide_capture(call: Call, state: State, block: Block, now: datetime) -> De
     if not isinstance(call.currency, str) or call.currency.upper() != res.currency.upper():
         return Decision(BLOCK, "R0", f"capture currency {call.currency!r} does not match "
                                      f"the reservation's {res.currency!r}")
+    if res.payment_id is not None and call.payment_id != res.payment_id:
+        return Decision(BLOCK, "R0", "capture payment id does not match the reservation")
     return Decision(ALLOW, "", "commits a held reservation",
                     {"order_id": call.order_id, "amount": res.amount,
                      "reservation_id": res.reservation_id})

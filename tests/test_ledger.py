@@ -209,16 +209,56 @@ def test_a_released_call_can_be_retried_with_the_same_arguments(conn):
     assert d2.outcome == ALLOW and ref2 is not None, d2
 
 
-def test_committing_the_same_reservation_twice_raises(conn):
-    """B26. A double commit is loud, never a silent second debit."""
+def test_committing_the_same_payment_twice_is_a_noop(conn):
+    """A webhook and the normal response may report the same capture."""
     d, ref = ledger.authorize(conn, order(50000), CFG, now=NOW)
     ledger.settle_order(conn, ref, order_id="order_D", result={"id": "order_D"})
     cap = Call(tool="capture_payment", caller_id=CALLER, amount=50000,
                currency="INR", order_id="order_D")
     _, ref2 = ledger.authorize(conn, cap, CFG, now=NOW)
-    ledger.settle_capture(conn, ref2, result={"id": "pay_D"})
-    with pytest.raises(RuntimeError, match="not held"):
-        ledger.settle_capture(conn, ref2, result={"id": "pay_D"})
+    assert ledger.settle_capture(conn, ref2, result={"id": "pay_D"}) is True
+    assert ledger.settle_capture(conn, ref2, result={"id": "pay_D"}) is False
+    assert balance(conn) == (50000, 0, 950000)
+
+
+def test_same_payment_on_a_different_reservation_freezes(conn):
+    """The race no-op belongs only to one payment on its own reservation."""
+    _, first = ledger.authorize(conn, order(50000, key="first-order"), CFG, now=NOW)
+    ledger.settle_order(conn, first, order_id="order_first", result={"id": "order_first"})
+    first_call = Call("capture_payment", CALLER, 50000, "INR",
+                      order_id="order_first", payment_id="pay_shared", idem_key="first-capture")
+    _, first_capture = ledger.authorize(conn, first_call, CFG, now=NOW)
+    assert ledger.settle_capture(conn, first_capture, result={"id": "pay_shared"}) is True
+
+    _, second = ledger.authorize(conn, order(50000, key="second-order"), CFG, now=NOW)
+    ledger.settle_order(conn, second, order_id="order_second", result={"id": "order_second"})
+    second_call = Call("capture_payment", CALLER, 50000, "INR",
+                       order_id="order_second", payment_id="pay_shared", idem_key="second-capture")
+    _, second_capture = ledger.authorize(conn, second_call, CFG, now=NOW)
+    assert ledger.settle_capture(conn, second_capture, result={"id": "pay_shared"}) is False
+    assert balance(conn) == (50000, 50000, 900000)
+    assert ledger.snapshot(conn, CALLER).frozen_at is not None
+
+
+def test_a_different_payment_on_the_same_reservation_freezes(conn):
+    """The mirror of the test above. The no-op is bound to the payment as much
+    as to the reservation: if it were keyed on the reservation alone, a second
+    capture reporting a different payment would return quietly as a duplicate
+    and the ledger would never record that two payments exist for one order.
+    """
+    _, ref = ledger.authorize(conn, order(50000, key="order-E"), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_E", result={"id": "order_E"})
+    cap = Call("capture_payment", CALLER, 50000, "INR",
+               order_id="order_E", payment_id="pay_first", idem_key="capture-E")
+    _, capture = ledger.authorize(conn, cap, CFG, now=NOW)
+    assert ledger.settle_capture(conn, capture, result={"id": "pay_first"}) is True
+
+    assert ledger.settle_capture(conn, capture, result={"id": "pay_second"}) is False
+    # Not debited twice, and the conflict is named rather than swallowed.
+    assert balance(conn) == (50000, 0, 950000)
+    block = ledger.snapshot(conn, CALLER)
+    assert block.frozen_at is not None
+    assert block.freeze_reason == "different payment committed for one reservation"
 
 
 # revocation, idempotency, velocity ------------------------------------------
@@ -297,6 +337,14 @@ def test_a_hold_reserves_so_the_balance_cannot_be_spent_underneath_it(conn):
     assert d.outcome == HOLD, d
     assert balance(conn) == (0, 300000, 700000)
     ledger.release(conn, ref, reason="hold expired unapproved", now=NOW)
+    assert balance(conn) == (0, 0, 1000000)
+
+
+def test_an_expired_hold_cannot_be_approved(conn):
+    decision, ref = ledger.authorize(conn, order(300000), CFG, now=NOW)
+    assert decision.outcome == HOLD
+    expired = NOW + timedelta(minutes=CFG.reservation_ttl_minutes, seconds=1)
+    assert ledger.renew_hold(conn, ref, CFG.reservation_ttl_minutes, now=expired) is False
     assert balance(conn) == (0, 0, 1000000)
 
 

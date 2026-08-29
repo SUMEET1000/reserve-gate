@@ -900,3 +900,91 @@ def test_a_matching_event_against_a_frozen_block_is_rejected(conn):
 
 def test_a_caller_with_no_block_has_no_snapshot(conn):
     assert ledger.snapshot(conn, "a-caller-that-was-never-issued-a-block") is None
+
+
+# the block dies while a reservation waits ------------------------------------
+
+def test_an_empty_idempotency_key_is_an_absent_one(conn):
+    """"" is neither a client key nor an absent key, and authorize() used to read
+    it as both: truthiness derived the digest, `is None` called it client-
+    supplied, and the row was stored permanently. The same purchase an hour later
+    then replayed the first order instead of being a second sale (E13)."""
+    d1, ref1 = ledger.authorize(conn, order(50000, key=""), CFG, now=NOW)
+    ledger.settle_order(conn, ref1, order_id="order_blank", result={"id": "order_blank"})
+    later = NOW + timedelta(seconds=CFG.derived_key_ttl_seconds + 1)
+    d2, ref2 = ledger.authorize(conn, order(50000, key=""), CFG, now=later)
+    assert (d1.outcome, d2.outcome) == (ALLOW, ALLOW), (d1, d2)
+    assert not d2.detail.get("replay"), d2.detail
+    assert ref2 is not None and ref2.reservation_id != ref1.reservation_id
+
+
+def test_an_empty_key_still_collapses_a_retry_inside_the_window(conn):
+    """The control for the test above. Dropping the permanence must not drop the
+    five minutes of retry protection that a derived key exists for."""
+    _, ref = ledger.authorize(conn, order(50000, key=""), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_retry", result={"id": "order_retry"})
+    d, _ = ledger.authorize(conn, order(50000, key=""), CFG, now=NOW + timedelta(seconds=5))
+    assert d.detail.get("replay") is True, d.detail
+
+
+@pytest.mark.parametrize("reply, named", [
+    ({"id": "pay_M", "amount": 60000}, "amount"),
+    ({"id": "pay_M", "amount": "50000"}, "amount"),
+    ({"id": "pay_M", "currency": "USD"}, "currency"),
+])
+def test_a_capture_reply_that_disagrees_on_money_freezes(conn, reply, named):
+    """The reply named a different amount or currency from the one reserved, and
+    settle_capture booked it as spending because it only ever read the payment
+    id. The webhook path already refuses the same disagreement."""
+    _, ref = ledger.authorize(conn, order(50000, key="order-money"), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_money", result={"id": "order_money"})
+    cap = Call("capture_payment", CALLER, 50000, "INR", order_id="order_money",
+               payment_id="pay_M", idem_key="capture-money")
+    _, capture = ledger.authorize(conn, cap, CFG, now=NOW)
+    assert ledger.settle_capture(conn, capture, result=reply, now=NOW) == "refused"
+    assert balance(conn) == (0, 50000, 950000)
+    assert named in ledger.snapshot(conn, CALLER).freeze_reason
+
+
+def test_a_capture_reply_that_agrees_on_money_commits(conn):
+    """The control. Currency is compared case-insensitively, the way R0 does, so
+    a reply saying "inr" is agreement and not a conflict."""
+    _, ref = ledger.authorize(conn, order(50000, key="order-agree"), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_agree", result={"id": "order_agree"})
+    cap = Call("capture_payment", CALLER, 50000, "INR", order_id="order_agree",
+               payment_id="pay_A", idem_key="capture-agree")
+    _, capture = ledger.authorize(conn, cap, CFG, now=NOW)
+    assert ledger.settle_capture(
+        conn, capture, result={"id": "pay_A", "amount": 50000, "currency": "inr"},
+        now=NOW) == "committed"
+    assert balance(conn) == (50000, 0, 950000)
+    assert ledger.snapshot(conn, CALLER).frozen_at is None
+
+
+def test_one_block_pays_for_three_purchases_and_then_refuses(db):
+    """R3, Single Block Multiple Debits. One block funds purchase after purchase
+    until it is exhausted, and the exhausting call is refused by R1 rather than
+    the block going negative. Every other multi-debit test either commits once or
+    is driven through the harness setup history."""
+    cfg = Config(reserved=500000, currency="INR", expires_days=30, max_txn=200000,
+                 approval_over=200000, velocity_calls=10, velocity_window_minutes=1,
+                 reservation_ttl_minutes=15, derived_key_ttl_seconds=300)
+    conn = ledger.connect(db)
+    ledger.init(conn, cfg, caller_id=CALLER, now=NOW)
+    try:
+        for n in (1, 2):
+            d, ref = ledger.authorize(conn, order(200000, key=f"buy-{n}"), cfg, now=NOW)
+            assert d.outcome == ALLOW, (n, d)
+            ledger.settle_order(conn, ref, order_id=f"order_{n}", result={"id": f"order_{n}"})
+            cap = Call("capture_payment", CALLER, 200000, "INR", order_id=f"order_{n}",
+                       payment_id=f"pay_{n}", idem_key=f"cap-{n}")
+            _, capture = ledger.authorize(conn, cap, cfg, now=NOW)
+            assert ledger.settle_capture(conn, capture, result={"id": f"pay_{n}"},
+                                         now=NOW) == "committed"
+            assert ledger.snapshot(conn, CALLER).spent == 200000 * n
+
+        third, ref3 = ledger.authorize(conn, order(200000, key="buy-3"), cfg, now=NOW)
+        assert (third.outcome, third.rule, ref3) == (BLOCK, "R1", None), third
+        assert balance(conn) == (400000, 0, 100000)
+    finally:
+        conn.close()

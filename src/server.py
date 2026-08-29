@@ -94,6 +94,20 @@ def _refusal(decision) -> ValueError:
 
 async def _settle(conn, tool: str, ref: ledger.Ref, args: dict) -> Any:
     """Forward an approved call and close out the hold it is standing on."""
+    # The reservation was committed before this line and nothing has gone
+    # upstream yet, so a revocation, an expiry or a freeze landing in that gap
+    # still has to stop the call. Checking at authorize() alone left the window
+    # open on the ordinary path after renew_hold closed it for a HOLD.
+    dead = ledger.block_not_live(conn, ref)
+    if dead:
+        audit.record(event="block", kind="money", tool=tool,
+                     reservation_id=ref.reservation_id, reason=dead)
+        if tool == "create_order":
+            # Nothing reached Razorpay and the hold is seconds old, so it goes
+            # back. A capture's hold belongs to an order that may still be paid;
+            # releasing that one would let the webhook settle money twice.
+            ledger.release(conn, ref, reason=dead)
+        raise ValueError(f"BLOCK {dead} before the call was forwarded")
     if tool == "capture_payment":
         # Persist before the network call: a process death after Razorpay acts
         # must not let the ordinary reservation TTL return possibly-spent money.
@@ -107,8 +121,10 @@ async def _settle(conn, tool: str, ref: ledger.Ref, args: dict) -> Any:
             ledger.release(conn, ref, reason=str(e))
         else:
             # G14 / B25b. A timeout says nothing about whether Razorpay acted.
-            # The hold stays until reconciliation; releasing or expiring it
-            # would hand back a balance that was really spent.
+            # A capture was marked outcome_unknown above, so its hold survives
+            # the TTL and waits for reconciliation. An order's hold is not
+            # marked and expires normally by design: an order Razorpay may or
+            # may not have created is not money moved until it is captured.
             audit.record(event="outcome_unknown", tool=tool, reservation_id=ref.reservation_id,
                          error=str(e), note="hold kept: the upstream outcome is unknown")
         raise ValueError(f"{tool} failed upstream: {e}") from None

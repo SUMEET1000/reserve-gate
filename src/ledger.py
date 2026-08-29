@@ -317,10 +317,15 @@ def authorize(conn: sqlite3.Connection, call: Call, config: Config, *,
         # Inside the transaction, because args_hash json.dumps-es caller-supplied
         # values: an argument it cannot serialise has to fail closed through the
         # G4 handler below rather than raise past it.
-        key = call.idem_key or args_hash(call)
-        bound_hash = (args_hash(call, idempotency_args)
-                      if call.idem_key else args_hash(call))
-        derived = call.idem_key is None
+        # An empty string is neither a key nor an absent key, and the three
+        # lines below used to disagree about which: truthiness derived the
+        # digest while `is None` called it client-supplied, so the row was
+        # stored permanently with a hash that ignores the arguments and a
+        # changed amount minted a second key instead of conflicting (G16).
+        client_key = call.idem_key or None
+        key = client_key or args_hash(call)
+        bound_hash = args_hash(call, idempotency_args) if client_key else args_hash(call)
+        derived = client_key is None
         _expire_stale(conn, now)
         window = iso(now - timedelta(minutes=config.velocity_window_minutes))
         # B13. The velocity check and the row that increments it share this
@@ -398,6 +403,30 @@ def settle_order(conn: sqlite3.Connection, ref: Ref, *, order_id: str, result: d
         conn.execute("ROLLBACK")
         raise
     audit.record(event="reservation_bound", reservation_id=ref.reservation_id, order_id=order_id)
+
+
+def block_not_live(conn: sqlite3.Connection, ref: Ref, *,
+                   now: datetime | None = None) -> str | None:
+    """Why this reservation's block cannot be spent right now, or None.
+
+    G14 splits a debit into a reservation and a forward, and the block can die
+    in between: revoked (R4), expired (R2) or frozen for reconciliation (G4).
+    renew_hold learned this for an approved HOLD; every call that waits needs
+    it, because a gate checked once is not a gate for anything that waits.
+    """
+    now = now or now_utc()
+    b = conn.execute("SELECT b.revoked_at, b.frozen_at, b.expires_at FROM reservations r"
+                     " JOIN blocks b ON b.block_id = r.block_id"
+                     " WHERE r.reservation_id = ?", (ref.reservation_id,)).fetchone()
+    if b is None:
+        return "[G4] the reservation is unknown"
+    if b["revoked_at"] is not None:
+        return f"[R4] the block was revoked at {b['revoked_at']}"
+    if now >= parse(b["expires_at"]):
+        return f"[R2] the block expired at {b['expires_at']}"
+    if b["frozen_at"] is not None:
+        return f"[G4] the block is frozen since {b['frozen_at']}"
+    return None
 
 
 def release(conn: sqlite3.Connection, ref: Ref, *, reason: str,
@@ -484,8 +513,9 @@ def settle_capture(conn: sqlite3.Connection, ref: Ref, *, result: dict,
     now = now or now_utc()
     conn.execute("BEGIN IMMEDIATE")
     try:
-        r = conn.execute("SELECT block_id, amount, state, payment_id FROM reservations"
-                         " WHERE reservation_id = ?", (ref.reservation_id,)).fetchone()
+        r = conn.execute("SELECT block_id, amount, currency, state, payment_id FROM"
+                         " reservations WHERE reservation_id = ?",
+                         (ref.reservation_id,)).fetchone()
         payment_id = result.get("id")
         if not isinstance(payment_id, str) or not payment_id.strip():
             raise RuntimeError("captured result has no payment id")
@@ -538,12 +568,26 @@ def settle_capture(conn: sqlite3.Connection, ref: Ref, *, result: dict,
             late = f"expires_at={b['expires_at']}"
         else:
             late = None
-        if r["payment_id"] is not None and r["payment_id"] != payment_id:
+        # A reply that states an amount or a currency has to state the reserved
+        # one. An absent field makes no claim, which is what keeps the fixtures
+        # and the harness cases valid; a stated disagreement is a money conflict
+        # and freezes, the way the webhook path already treats the same one.
+        mismatch = ("capture response payment mismatch"
+                    if r["payment_id"] is not None and r["payment_id"] != payment_id else
+                    "capture response amount mismatch"
+                    if result.get("amount") is not None
+                    and (type(result["amount"]) is not int
+                         or result["amount"] != r["amount"]) else
+                    "capture response currency mismatch"
+                    if result.get("currency") is not None
+                    and (not isinstance(result["currency"], str)
+                         or result["currency"].upper() != r["currency"].upper()) else None)
+        if mismatch:
             conn.execute("UPDATE blocks SET frozen_at = ?, freeze_reason = ? WHERE block_id = ?",
-                         (iso(now), "capture response payment mismatch", r["block_id"]))
+                         (iso(now), mismatch, r["block_id"]))
             conn.execute("COMMIT")
             audit.record(event="block_frozen", reservation_id=ref.reservation_id,
-                         block_id=r["block_id"], reason="capture response payment mismatch")
+                         block_id=r["block_id"], reason=mismatch)
             return "refused"
         conn.execute("UPDATE reservations SET state = 'committed', settled_at = ?, payment_id = ?"
                      " WHERE reservation_id = ?", (iso(now), payment_id, ref.reservation_id))

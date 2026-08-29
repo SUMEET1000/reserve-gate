@@ -1,6 +1,8 @@
 """G11. The audit log is the artefact the judging bar asks for, so it has to be
 tamper-evident: a log anyone can edit in place proves nothing at all."""
 import json
+import sys
+import threading
 
 import pytest
 
@@ -165,3 +167,27 @@ def test_a_line_that_is_not_json_fails_at_its_own_line_number(log):
     """B22 reports where the log stopped being trustworthy, not merely that it did."""
     rewrite(log, lines(log)[:2] + ["{ not json"] + lines(log)[2:])
     assert audit.verify(str(log)) == (False, 3)
+
+
+def test_concurrent_records_do_not_fork_the_chain(tmp_path, monkeypatch):
+    """record() read-modify-writes the chain tail and then appends. Without one
+    lock over both, two threads give two records the same prev_hash and verify()
+    reports a log nobody tampered with as broken."""
+    p = tmp_path / "threads.jsonl"
+    monkeypatch.setenv("RESERVE_GATE_AUDIT", str(p))
+    monkeypatch.setattr(audit, "_prev_hash", None)
+    monkeypatch.setattr(audit, "_prev_path", None)
+    before = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)               # make the interleave certain, not likely
+    try:
+        threads = [threading.Thread(target=lambda n=n: [audit.record(event="allow", t=n, i=i)
+                                                        for i in range(25)])
+                   for n in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(before)
+    assert len(lines(p)) == 200
+    assert audit.verify(str(p)) == (True, None)

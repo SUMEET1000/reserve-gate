@@ -480,3 +480,93 @@ def test_a_matching_capture_is_still_handed_back(monkeypatch, tmp_path):
     conn = ledger.connect()
     assert ledger.snapshot(conn, caller).spent == 50000
     conn.close()
+
+
+@pytest.mark.parametrize("kill, rule", [("revoke", r"R4"), ("expire", r"R2"), ("freeze", r"G4")])
+def test_a_block_that_dies_before_the_forward_stops_the_order(monkeypatch, tmp_path, kill, rule):
+    """The reservation is committed before the upstream call, so a revocation, an
+    expiry or a freeze landing in that gap has to stop the forward. Deciding once
+    at authorize() left the ordinary path open after renew_hold closed it for a
+    HOLD, and R4 says every later money call refuses immediately."""
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / f"window-{kill}.db"))
+    conn = ledger.connect()
+    cfg, caller = server.config(), server.caller_id()
+    ledger.init(conn, cfg, caller_id=caller)
+    _, ref = ledger.authorize(conn, Call("create_order", caller, 180000, "INR"), cfg)
+    block = ledger.snapshot(conn, caller)
+    assert block.held == 180000
+
+    if kill == "revoke":
+        ledger.revoke(conn, block.block_id)
+    else:
+        column = "expires_at" if kill == "expire" else "frozen_at"
+        when = ledger.now_utc() - timedelta(seconds=1)
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(f"UPDATE blocks SET {column} = ? WHERE block_id = ?",
+                     (ledger.iso(when), block.block_id))
+        conn.execute("COMMIT")
+
+    reached = []
+
+    async def upstream(tool, _args):
+        reached.append(tool)
+        return {"id": "order_that_must_not_exist"}
+
+    monkeypatch.setattr(server, "call_razorpay", upstream)
+    with pytest.raises(ValueError, match=rule):
+        asyncio.run(server._settle(conn, "create_order", ref, {}))
+    assert reached == []
+    # Nothing was sent, so the hold is not owed to anything and goes back.
+    assert ledger.snapshot(conn, caller).held == 0
+    conn.close()
+
+
+def test_a_live_block_still_forwards(monkeypatch, tmp_path):
+    """The control for the test above: the recheck must refuse a dead block and
+    nothing else, or it would refuse every honest call and still look green."""
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "window-live.db"))
+    conn = ledger.connect()
+    cfg, caller = server.config(), server.caller_id()
+    ledger.init(conn, cfg, caller_id=caller)
+    _, ref = ledger.authorize(conn, Call("create_order", caller, 180000, "INR"), cfg)
+    reached = []
+
+    async def upstream(tool, _args):
+        reached.append(tool)
+        return {"id": "order_live"}
+
+    monkeypatch.setattr(server, "call_razorpay", upstream)
+    assert asyncio.run(server._settle(conn, "create_order", ref, {}))["id"] == "order_live"
+    assert reached == ["create_order"]
+    conn.close()
+
+
+def test_a_capture_stopped_in_the_window_keeps_its_hold(monkeypatch, tmp_path):
+    """The order is real and may still be paid, so refusing the capture must not
+    hand the money back — a webhook settling it afterwards would then spend a
+    balance the block had already released."""
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "window-capture.db"))
+    conn = ledger.connect()
+    cfg, caller = server.config(), server.caller_id()
+    ledger.init(conn, cfg, caller_id=caller)
+    _, order_ref = ledger.authorize(
+        conn, Call("create_order", caller, 50000, "INR", idem_key="window-order"), cfg)
+    ledger.settle_order(conn, order_ref, order_id="order_window",
+                        result={"id": "order_window"})
+    _, capture_ref = ledger.authorize(
+        conn, Call("capture_payment", caller, 50000, "INR", order_id="order_window",
+                   payment_id="pay_window", idem_key="window-capture"), cfg)
+    ledger.revoke(conn, ledger.snapshot(conn, caller).block_id)
+    reached = []
+
+    async def upstream(tool, _args):
+        reached.append(tool)
+        return {"id": "pay_window", "status": "captured"}
+
+    monkeypatch.setattr(server, "call_razorpay", upstream)
+    with pytest.raises(ValueError, match=r"R4"):
+        asyncio.run(server._settle(conn, "capture_payment", capture_ref, {}))
+    assert reached == []
+    block = ledger.snapshot(conn, caller)
+    assert (block.held, block.spent) == (50000, 0)
+    conn.close()

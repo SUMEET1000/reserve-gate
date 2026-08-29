@@ -20,6 +20,7 @@ log at all, which is the only reason it exists.
 import hashlib
 import json
 import os
+import threading
 from datetime import datetime, timezone
 
 # Any field whose name contains one of these is replaced wholesale. Values that
@@ -74,6 +75,10 @@ def _digest(rec: dict) -> str:
 # starting a second one in the middle of the same file.
 _prev_hash: str | None = None
 _prev_path: str | None = None
+# record() read-modify-writes that tail and then appends. Two threads doing it
+# at once hand two records the same prev_hash, which forks the chain and fails
+# verify(). The two-thread ledger test already drives this path.
+_lock = threading.Lock()
 
 
 def tail_hash(p: str) -> str | None:
@@ -98,25 +103,26 @@ def record(**fields) -> dict:
     problem: G4 turns any exception in the money path into a refusal, so a
     formatting fault in the log would refuse an honest call."""
     global _prev_hash, _prev_path
-    p = path()
-    if _prev_path != p:
-        _prev_hash, _prev_path = tail_hash(p), p
+    with _lock:
+        p = path()
+        if _prev_path != p:
+            _prev_hash, _prev_path = tail_hash(p), p
 
-    rec = {"ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-           **_scrub(fields, _live_secrets()), "prev_hash": _prev_hash}
-    try:
-        line = _canonical({**rec, "hash": _digest(rec)})
-    except (TypeError, ValueError):
-        rec = {"ts": rec["ts"], "event": fields.get("event", "unknown"),
-               "error": "record not serialisable", "prev_hash": _prev_hash}
-        line = _canonical({**rec, "hash": _digest(rec)})
-    rec["hash"] = json.loads(line)["hash"]
-    _prev_hash = rec["hash"]
-    # encoding and newline are both explicit: the default on Windows is cp1252,
-    # which raises on a rupee sign, and the default newline translation would
-    # put CRLF in a file the chain is read back from.
-    with open(p, "a", encoding="utf-8", newline="\n") as f:
-        f.write(line + "\n")
+        rec = {"ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+               **_scrub(fields, _live_secrets()), "prev_hash": _prev_hash}
+        try:
+            line = _canonical({**rec, "hash": _digest(rec)})
+        except (TypeError, ValueError):
+            rec = {"ts": rec["ts"], "event": fields.get("event", "unknown"),
+                   "error": "record not serialisable", "prev_hash": _prev_hash}
+            line = _canonical({**rec, "hash": _digest(rec)})
+        rec["hash"] = json.loads(line)["hash"]
+        _prev_hash = rec["hash"]
+        # encoding and newline are both explicit: the default on Windows is cp1252,
+        # which raises on a rupee sign, and the default newline translation would
+        # put CRLF in a file the chain is read back from.
+        with open(p, "a", encoding="utf-8", newline="\n") as f:
+            f.write(line + "\n")
     return rec
 
 

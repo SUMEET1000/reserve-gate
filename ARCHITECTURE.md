@@ -37,8 +37,8 @@ AI buyer.
         |  the block:  born at boot from policy.yaml         |
         |              killed by POST /revoke/{block_id}     |
         |                                                   |
-        |  /approve, /revoke and /block take the ADMIN       |
-        |  token, which the agent is never given             |
+        |  /approve, /revoke, /unfreeze and /block take      |
+        |  the ADMIN token, which the agent is never given   |
         |                                                     |
         |  POST /webhook: raw-body HMAC, event-id dedupe      |
         |  capture reconcile -> commit, no-op, or freeze      |
@@ -74,7 +74,7 @@ adopting a changed money API would be the wrong default.
 |---|---|
 | Public internet to the deployed server | Bearer token, constant-time compare. `/health` is open; exact route `/webhook` uses raw-body HMAC authentication. |
 | Razorpay webhook to money state | HMAC-SHA256 is checked over exact raw bytes before parsing. Event IDs deduplicate atomically with settlement. |
-| Agent to the operator's controls | A second secret. `/approve`, `/revoke` and `/block` take `RESERVE_GATE_ADMIN_TOKEN`; the agent holds only `RESERVE_GATE_TOKEN`. Guarding the approval gate with the token the gated party already carries would let the agent approve its own spending. |
+| Agent to the operator's controls | A second secret. `/approve`, `/revoke`, `/unfreeze` and `/block` take `RESERVE_GATE_ADMIN_TOKEN`; the agent holds only `RESERVE_GATE_TOKEN`. Guarding the approval gate with the token the gated party already carries would let the agent approve its own spending. |
 | Caller to upstream | The caller's `Authorization` header is removed before forwarding. Only the gate's own Razorpay credential ever reaches Razorpay. |
 | Upstream data to the model | Order notes, receipts and error strings come back from Razorpay and reach the model's context. No decision is ever made from that text. |
 | Upstream URL | A module constant. It is never read from a request. |
@@ -90,10 +90,11 @@ and never debits again. An unpaid reservation is released when it times out, so
 orders that are never paid do not permanently consume the block.
 
 `payment.captured` webhooks reconcile the same reservation. The first valid
-normal response or webhook changes held to spent; a same-payment race is a
-no-op. A late capture, mismatched money field, or different committed payment
-freezes the block. There is no automatic unfreeze because choosing a winner
-without Razorpay payment-history reconciliation would hide a money conflict.
+normal response or webhook changes held to spent; only the same payment on the
+same reservation is a no-op. Reusing one payment across reservations, a late
+capture, a mismatched money field, or a different committed payment freezes the
+block. `POST /unfreeze/{block_id}` lets the admin clear that freeze after review;
+it does not reconcile or rebuild payment history.
 
 `capture_payment` is handed only a `payment_id`, so the gate reads the real
 `order_id`, `amount` and `currency` off Razorpay's payment object rather than

@@ -442,6 +442,17 @@ def settle_capture(conn: sqlite3.Connection, ref: Ref, *, result: dict,
         payment_id = result.get("id")
         if not isinstance(payment_id, str) or not payment_id.strip():
             raise RuntimeError("captured result has no payment id")
+        other = conn.execute(
+            "SELECT reservation_id FROM reservations WHERE payment_id = ?"
+            " AND state = 'committed' AND reservation_id <> ?",
+            (payment_id, ref.reservation_id)).fetchone()
+        if r and other:
+            conn.execute("UPDATE blocks SET frozen_at = ?, freeze_reason = ? WHERE block_id = ?",
+                         (iso(now), "payment committed to another reservation", r["block_id"]))
+            conn.execute("COMMIT")
+            audit.record(event="block_frozen", reservation_id=ref.reservation_id,
+                         block_id=r["block_id"], reason="payment committed elsewhere")
+            return False
         if r and r["state"] == "committed" and r["payment_id"] == payment_id:
             conn.execute("UPDATE idempotency SET result = ? WHERE caller_id = ? AND key = ?",
                          (json.dumps(result), ref.caller_id, ref.key))
@@ -533,6 +544,11 @@ def reconcile_webhook(conn: sqlite3.Connection, event_id: str, event_type: str,
                     reason = "unknown_order"
                 else:
                     block_id, reservation_id = r["block_id"], r["reservation_id"]
+                    other = (conn.execute(
+                        "SELECT 1 FROM reservations WHERE payment_id = ?"
+                        " AND state = 'committed' AND reservation_id <> ?",
+                        (payment_id, r["reservation_id"])).fetchone()
+                        if isinstance(payment_id, str) and payment_id.strip() else None)
                     mismatch = (not isinstance(payment_id, str) or not payment_id.strip()
                                 or (r["payment_id"] is not None and r["payment_id"] != payment_id)
                                 or type(entity.get("amount")) is not int
@@ -542,8 +558,9 @@ def reconcile_webhook(conn: sqlite3.Connection, event_id: str, event_type: str,
                                 or entity.get("status") != "captured")
                     conflict = r["state"] == "committed" and r["payment_id"] != payment_id
                     late = r["state"] == "released"
-                    if mismatch or conflict or late:
+                    if mismatch or conflict or late or other:
                         reason = ("payment_mismatch" if mismatch else
+                                  "payment_already_committed_elsewhere" if other else
                                   "different_payment" if conflict else "late_capture")
                         conn.execute("UPDATE blocks SET frozen_at = ?, freeze_reason = ?"
                                      " WHERE block_id = ? AND frozen_at IS NULL",
@@ -596,4 +613,22 @@ def revoke(conn: sqlite3.Connection, block_id: str, *, now: datetime | None = No
         conn.execute("ROLLBACK")
         raise
     audit.record(event="block_revoked", block_id=block_id, changed=changed)
+    return changed
+
+
+def unfreeze(conn: sqlite3.Connection, block_id: str) -> bool | None:
+    """Clear only reconciliation freeze state. Unknown blocks return None."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if conn.execute("SELECT 1 FROM blocks WHERE block_id = ?", (block_id,)).fetchone() is None:
+            conn.execute("COMMIT")
+            return None
+        cur = conn.execute("UPDATE blocks SET frozen_at = NULL, freeze_reason = NULL"
+                           " WHERE block_id = ? AND frozen_at IS NOT NULL", (block_id,))
+        changed = cur.rowcount > 0
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    audit.record(event="block_unfrozen", block_id=block_id, changed=changed)
     return changed

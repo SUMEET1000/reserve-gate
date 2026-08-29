@@ -28,7 +28,7 @@ from .webhook import handle as handle_webhook
 
 # Paths the operator uses and the agent must never reach. Checked against
 # RESERVE_GATE_ADMIN_TOKEN, a different secret from the one the agent holds.
-ADMIN_PATHS = ("/approve/", "/revoke/", "/block")
+ADMIN_PATHS = ("/approve/", "/revoke/", "/unfreeze/", "/block")
 
 # call_id -> (tool, upstream args, Ref). A HOLD parks here until POST /approve.
 # ponytail: in memory, so a restart forgets the pending approvals. The hold
@@ -261,6 +261,19 @@ async def revoke(request):
     return JSONResponse({"block_id": block_id, "revoked": changed}, 200 if changed else 404)
 
 
+@mcp.custom_route("/unfreeze/{block_id}", ["POST"])
+async def unfreeze(request):
+    block_id = request.path_params["block_id"]
+    conn = ledger.connect()
+    try:
+        changed = ledger.unfreeze(conn, block_id)
+    finally:
+        conn.close()
+    if changed is None:
+        return JSONResponse({"error": "block not found"}, 404)
+    return JSONResponse({"block_id": block_id, "unfrozen": changed})
+
+
 @mcp.custom_route("/approve/{call_id}", ["POST"])
 async def approve(request):
     """Release one HOLD, and only ever once: the pending call is popped, so a
@@ -287,7 +300,7 @@ def bearer_auth(app):
     """Reject every HTTP request that does not present the right credential.
 
     Two secrets, not one. The agent holds RESERVE_GATE_TOKEN to reach /mcp;
-    /approve, /revoke and /block need RESERVE_GATE_ADMIN_TOKEN, which it is
+    /approve, /revoke, /unfreeze and /block need RESERVE_GATE_ADMIN_TOKEN, which it is
     never given. Guarding the human approval gate with the token the gated party
     already holds would let the agent approve its own spending (G12). /health is
     open so an uptime check needs no credential at all.

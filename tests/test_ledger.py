@@ -221,6 +221,25 @@ def test_committing_the_same_payment_twice_is_a_noop(conn):
     assert balance(conn) == (50000, 0, 950000)
 
 
+def test_same_payment_on_a_different_reservation_freezes(conn):
+    """The race no-op belongs only to one payment on its own reservation."""
+    _, first = ledger.authorize(conn, order(50000, key="first-order"), CFG, now=NOW)
+    ledger.settle_order(conn, first, order_id="order_first", result={"id": "order_first"})
+    first_call = Call("capture_payment", CALLER, 50000, "INR",
+                      order_id="order_first", payment_id="pay_shared", idem_key="first-capture")
+    _, first_capture = ledger.authorize(conn, first_call, CFG, now=NOW)
+    assert ledger.settle_capture(conn, first_capture, result={"id": "pay_shared"}) is True
+
+    _, second = ledger.authorize(conn, order(50000, key="second-order"), CFG, now=NOW)
+    ledger.settle_order(conn, second, order_id="order_second", result={"id": "order_second"})
+    second_call = Call("capture_payment", CALLER, 50000, "INR",
+                       order_id="order_second", payment_id="pay_shared", idem_key="second-capture")
+    _, second_capture = ledger.authorize(conn, second_call, CFG, now=NOW)
+    assert ledger.settle_capture(conn, second_capture, result={"id": "pay_shared"}) is False
+    assert balance(conn) == (50000, 50000, 900000)
+    assert ledger.snapshot(conn, CALLER).frozen_at is not None
+
+
 # revocation, idempotency, velocity ------------------------------------------
 
 def test_revocation_refuses_the_next_call_immediately(conn):

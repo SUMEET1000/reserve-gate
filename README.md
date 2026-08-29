@@ -62,7 +62,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the trust boundaries and money flow.
 | R7 | Idempotency replays the first result and rejects a key reused with different parameters. |
 
 Calls above the approval threshold become `HOLD`. Only the operator token can
-approve them; the buyer token cannot reach approval, revocation, or block state.
+approve, revoke, inspect, or unfreeze a block; the buyer token cannot reach
+those controls.
 
 ## Measured adversarial evaluation
 
@@ -107,13 +108,14 @@ the exact raw request bytes and a dedicated `RAZORPAY_WEBHOOK_SECRET`.
 | Unexpected SQLite failure | Generic `500`; transaction rolled back. |
 
 The normal capture response and webhook use the same reservation transaction.
-Whichever commits first wins; the same payment reported by the other path is a
-no-op, and an in-flight idempotency result is completed so retries return the
-captured result.
+Whichever commits first wins; only the same payment on the same reservation is a
+no-op. Reusing one payment across reservations freezes the block, and an in-flight
+idempotency result is completed so retries return the captured result.
 
-A frozen block fails closed under G4. There is deliberately no unfreeze endpoint:
-automatically choosing a winner after two money records disagree would hide a
-reconciliation problem. Rebuilding from Razorpay payment history is future work.
+A frozen block fails closed under G4. An operator can acknowledge a reviewed
+conflict with `POST /unfreeze/{block_id}` using `RESERVE_GATE_ADMIN_TOKEN`; this
+only clears the freeze flag. It does not choose a payment record or rebuild the
+ledger from Razorpay history, which remains future work.
 
 ### Live webhook proof
 
@@ -188,7 +190,7 @@ token and does not implement an OAuth authorization server.
 - Pending approvals live in process memory. A restart forgets the approval link;
   the SQLite reservation still expires safely.
 - The hash chain does not stop a process owner from rewriting the whole log.
-- No automatic unfreeze or payment-history rebuild exists.
+- Manual unfreeze does not reconcile or rebuild payment history.
 - Dependency and policy tests are deterministic; the final dashboard webhook
   replay is the separate live integration proof.
 

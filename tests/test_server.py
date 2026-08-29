@@ -129,6 +129,34 @@ def test_an_unset_admin_token_refuses_instead_of_opening(monkeypatch, tmp_path):
     assert c.post("/revoke/abc", headers={"Authorization": "Bearer "}).status_code == 401
 
 
+def test_unfreeze_is_admin_only_and_idempotent(monkeypatch, tmp_path):
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "unfreeze.db"))
+    monkeypatch.setenv("RESERVE_GATE_TOKEN", TOKEN)
+    monkeypatch.setenv("RESERVE_GATE_ADMIN_TOKEN", ADMIN)
+    conn = ledger.connect()
+    caller = server.caller_id()
+    block_id = ledger.init(conn, server.config(), caller_id=caller)
+    conn.execute("UPDATE blocks SET frozen_at = ?, freeze_reason = ? WHERE block_id = ?",
+                 (ledger.iso(ledger.now_utc()), "test conflict", block_id))
+    conn.close()
+
+    app = Starlette(routes=[Route("/unfreeze/{block_id}", server.unfreeze, methods=["POST"])])
+    with TestClient(server.bearer_auth(app)) as c:
+        path = "/unfreeze/" + block_id
+        assert c.post(path, headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 401
+        assert c.post(path, headers={"Authorization": f"Bearer {ADMIN}"}).json() == {
+            "block_id": block_id, "unfrozen": True}
+        assert c.post(path, headers={"Authorization": f"Bearer {ADMIN}"}).json() == {
+            "block_id": block_id, "unfrozen": False}
+        assert c.post("/unfreeze/missing",
+                      headers={"Authorization": f"Bearer {ADMIN}"}).status_code == 404
+
+    conn = ledger.connect()
+    block = ledger.snapshot(conn, caller)
+    assert block.frozen_at is None and block.freeze_reason is None
+    conn.close()
+
+
 @pytest.mark.parametrize("known, held_after", [(True, 0), (False, 180000)])
 def test_only_a_known_refusal_hands_the_hold_back(monkeypatch, tmp_path, known, held_after):
     """G14 and B25b. Razorpay answering with a refusal proves the call did not

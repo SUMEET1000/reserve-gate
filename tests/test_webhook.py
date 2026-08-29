@@ -181,6 +181,23 @@ def test_webhook_wins_and_normal_response_is_same_payment_noop(client):
     conn.close()
 
 
+def test_same_payment_on_a_different_webhook_reservation_freezes(client):
+    conn, _ = held_order(order_id="order_first")
+    _, ref = capture_ref(conn, order_id="order_first", payment_id="pay_shared",
+                         key="first-capture")
+    assert ledger.settle_capture(conn, ref, result={"id": "pay_shared"}) is True
+    conn.close()
+
+    conn, _ = held_order(order_id="order_second")
+    r = signed(client, payment_event(order_id="order_second", payment_id="pay_shared"),
+               "evt_reused_payment")
+    block = ledger.snapshot(conn, CALLER)
+    assert r.json()["reason"] == "payment_already_committed_elsewhere"
+    assert (block.spent, block.held) == (50000, 50000)
+    assert block.frozen_at is not None
+    conn.close()
+
+
 def test_unexpected_storage_failure_is_generic_500_and_not_leaked(client, monkeypatch):
     def broken(*_args, **_kwargs):
         raise OSError("private database path")

@@ -73,7 +73,9 @@ def _step(conn, step: dict) -> None:
             oid = step["settle"] if repeat == 1 else step["settle"] + "-" + str(i)
             ledger.settle_order(conn, ref, order_id=oid, result={"id": oid})
         if step.get("capture"):
-            ledger.settle_capture(conn, ref, result={"id": step["capture"]}, now=now)
+            payment_id = (step["capture"] if repeat == 1
+                          else step["capture"] + "-" + str(i))
+            ledger.settle_capture(conn, ref, result={"id": payment_id}, now=now)
 
 
 def _run_webhook(conn, case: dict) -> tuple[str, str, str]:

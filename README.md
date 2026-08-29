@@ -79,6 +79,19 @@ Calls above the approval threshold become `HOLD`. Only the operator token can
 approve, revoke, inspect, or unfreeze a block; the buyer token cannot reach
 those controls.
 
+**R7 has a boundary a caller inherits by omitting the key.** No money call is
+left unkeyed: when a client sends no `idempotency_key`, the gate derives one from
+the caller, the tool, and the stable money fields, and remembers it for five
+minutes. `receipt` and `notes` are deliberately excluded, because a model
+regenerating a call after a timeout rewords them, and a key that moved with that
+prose would mint a second real order for one purchase. The cost of that choice is
+the other direction: two genuinely different purchases of the same amount, by the
+same caller, within five minutes, collapse into one — the second replays the
+first. A client that asserts the two are different says so by supplying its own
+key, which never expires and binds the full arguments, so reusing it with a
+changed amount, tool, or payee is a conflict rather than a replay. `src/buyer.py`
+supplies one on every call.
+
 ## Measured adversarial evaluation
 
 [eval_report.md](eval_report.md) is generated from 150 labelled cases using the
@@ -181,6 +194,20 @@ attacker who can rewrite the entire file can recompute it. The generated tail
 digest is committed in `eval_report.md` beside `harness/audit_run.jsonl`; a
 wholesale rewrite then disagrees with git history.
 
+The honest question is what that actually stops, so here is the answer by
+attacker rather than by adding an HMAC:
+
+| Attacker | Can they forge the log? | Does it matter? |
+|---|---|---|
+| The AI agent | No. It speaks MCP and never touches the file. | This is the attacker the gate exists for, and the chain is more than enough for it. |
+| A shell on the deployed instance | Yes | They also hold `RAZORPAY_KEY_SECRET`, so they can skip the gate and move money directly. Forging the log is a harder route to something they already have. |
+| The author | Yes | No key fixes this, because the author would hold the key too. The answer is reproducibility: a reader can run `harness/mutate.py` from a clean clone, with no credential and no network, and regenerate every number in `eval_report.md`. |
+
+An HMAC was considered and rejected. Its key would live beside the process
+writing the log, where an attacker who can rewrite the file already has it, and a
+`verify()` that needs a secret is one a reader with a clone cannot run — which is
+the only reason the log exists. Reproducible beats timestamped.
+
 The audit covers requests that reach application code. Schema-invalid MCP
 arguments can be rejected by the transport before a tool runs, so they have no
 application audit line. The committed harness remains reproducible from a clean
@@ -233,7 +260,10 @@ token and does not implement an OAuth authorization server.
   repository already holds.
 - Pending approvals live in process memory. A restart forgets the approval link;
   the SQLite reservation still expires safely.
-- The hash chain does not stop a process owner from rewriting the whole log.
+- The hash chain does not stop a process owner from rewriting the whole log. What
+  it does and does not cover is set out by attacker under *Audit-chain scope*.
+- A caller that omits `idempotency_key` inherits a five-minute collapse between
+  two identical-amount purchases. See the R7 boundary above.
 - Manual unfreeze does not reconcile or rebuild payment history.
 - Dependency and policy tests are deterministic; the final dashboard webhook
   replay is the separate live integration proof.

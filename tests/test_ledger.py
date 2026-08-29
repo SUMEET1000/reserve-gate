@@ -572,3 +572,141 @@ def test_a_refused_runaway_loop_still_trips_the_speed_limit(conn):
     rules = [ledger.authorize(conn, over_the_cap, CFG, now=NOW)[0].rule for _ in range(11)]
     assert rules[:10] == ["R5"] * 10, rules
     assert rules[10] == "R6", f"the eleventh refusal should be the throttle, got {rules[10]!r}"
+
+
+# the guards that had no test, added 2026-08-29 --------------------------------
+
+def test_a_capture_the_ledger_cannot_record_raises_instead_of_vanishing(conn):
+    """B26. Razorpay captured, and the reservation it belonged to is gone.
+
+    Returning quietly here is the one outcome the row forbids: the money moved
+    upstream and nothing local would say so. The reservation is released out from
+    under an authorised capture to reach the state, which is what a TTL expiring
+    between the upstream call and the commit really does.
+    """
+    d, ref = ledger.authorize(conn, order(50000, key="b26"), CFG, now=NOW)
+    assert d.outcome == ALLOW, d
+    ledger.settle_order(conn, ref, order_id="order_b26", result={"id": "order_b26"})
+    cap = Call(tool="capture_payment", caller_id=CALLER, amount=50000, currency="INR",
+               order_id="order_b26", idem_key="b26-cap")
+    dc, refc = ledger.authorize(conn, cap, CFG, now=NOW)
+    assert dc.outcome == ALLOW, dc
+
+    ledger.release(conn, refc, reason="ttl", now=NOW)
+    before = balance(conn)
+
+    with pytest.raises(RuntimeError, match="not held"):
+        ledger.settle_capture(conn, refc, result={"id": "pay_b26"}, now=NOW)
+    # Swapping the raise for a quiet `return False` is the mutation this catches;
+    # the balance assertion alone would pass under it.
+    assert balance(conn) == before
+
+
+def test_lock_contention_fails_closed(db):
+    """B31. `database is locked` must refuse, never fall through to an allow.
+
+    The busy timeout is cut to 50ms on the caller's connection so the contention
+    surfaces as OperationalError in the time a test can wait. Deleting the except
+    clause in authorize() makes this error out rather than block, which is the
+    point: an exception escaping the money path is not a refusal.
+    """
+    setup = ledger.connect(db)
+    ledger.init(setup, CFG, caller_id=CALLER, now=NOW)
+    setup.close()
+
+    holder = ledger.connect(db)
+    holder.execute("BEGIN IMMEDIATE")          # takes the write lock and keeps it
+    caller = ledger.connect(db)
+    caller.execute("PRAGMA busy_timeout=50")
+    try:
+        d, ref = ledger.authorize(caller, order(50000, key="b31"), CFG, now=NOW)
+        assert (d.outcome, d.rule) == (BLOCK, "G4"), d
+        assert ref is None, "a refused call must not hand back a reservation to settle"
+    finally:
+        holder.execute("ROLLBACK")
+        caller.close()
+        holder.close()
+
+    after = ledger.connect(db)
+    try:
+        assert balance(after) == (0, 0, CFG.reserved), "a refusal moved money"
+    finally:
+        after.close()
+
+
+def test_parallel_callers_cannot_beat_the_velocity_window(db, monkeypatch):
+    """B13. The same threaded proof B07 has, for R6 rather than R1.
+
+    The check and the increment share one BEGIN IMMEDIATE. Splitting them into
+    two statements outside a transaction is the bypass, and it is invisible to a
+    serial test: eight simultaneous callers would each read the same count.
+    """
+    cfg = Config(reserved=1000000, currency="INR", expires_days=30, max_txn=500000,
+                 approval_over=400000, velocity_calls=3, velocity_window_minutes=1,
+                 reservation_ttl_minutes=15, derived_key_ttl_seconds=300)
+    real = ledger.decide
+
+    def slow(*a, **kw):
+        time.sleep(0.02)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(ledger, "decide", slow)
+
+    setup = ledger.connect(db)
+    ledger.init(setup, cfg, caller_id=CALLER, now=NOW)
+    setup.close()
+
+    attempts = 8
+    results: list = [None] * attempts
+
+    def attempt(i):
+        c = ledger.connect(db)
+        try:
+            results[i], _ = ledger.authorize(c, order(100, key=f"p{i}"), cfg, now=NOW)
+        finally:
+            c.close()
+
+    threads = [threading.Thread(target=attempt, args=(i,)) for i in range(attempts)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    allowed = [d for d in results if d.outcome == ALLOW]
+    assert len(allowed) == cfg.velocity_calls, [(d.outcome, d.rule) for d in results]
+    assert {d.rule for d in results if d.outcome == BLOCK} == {"R6"}, results
+
+
+def test_sql_metacharacters_are_data_and_never_query(db):
+    """B19. Parameterised everywhere, so a caller id or an order id full of SQL
+    is a string that matches nothing rather than a statement that runs.
+
+    A real caller id is a sha256 digest and cannot contain these, so this reaches
+    past caller_id_for and hands the ledger the hostile value directly — the only
+    way to exercise the queries the row is about.
+    """
+    hostile = "'; DROP TABLE blocks; --"
+    conn = ledger.connect(db)
+    try:
+        ledger.init(conn, CFG, caller_id=hostile, now=NOW)
+        call = Call(tool="create_order", caller_id=hostile, amount=50000, currency="INR",
+                    idem_key="' OR 1=1 --")
+        d, ref = ledger.authorize(conn, call, CFG, now=NOW)
+        assert d.outcome == ALLOW, d
+        ledger.settle_order(conn, ref, order_id="order_' OR 1=1 --", result={"id": "x"})
+
+        assert conn.execute("SELECT COUNT(*) c FROM blocks").fetchone()["c"] == 1
+        b = ledger.snapshot(conn, hostile)
+        assert (b.spent, b.held) == (0, 50000)
+
+        # The hostile order id is a literal. It matches its own reservation and
+        # nothing else, so a tautology in it buys no extra rows.
+        cap = Call(tool="capture_payment", caller_id=hostile, amount=50000,
+                   currency="INR", order_id="order_' OR 1=1 --", idem_key="cap-sqli")
+        assert ledger.authorize(conn, cap, CFG, now=NOW)[0].outcome == ALLOW
+        miss = Call(tool="capture_payment", caller_id=hostile, amount=50000,
+                    currency="INR", order_id="' OR 1=1 --", idem_key="miss-sqli")
+        dm, _ = ledger.authorize(conn, miss, CFG, now=NOW)
+        assert (dm.outcome, dm.rule) == (BLOCK, "R3"), dm
+    finally:
+        conn.close()

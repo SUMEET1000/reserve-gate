@@ -119,9 +119,15 @@ ledger from Razorpay history, which remains future work.
 
 ### Live webhook proof
 
-Pending the test-mode dashboard replay. This section will contain only the
-measured before/after block values and duplicate results after the deployed run;
-no local result is presented as live evidence.
+`[measured 29 Aug 2026: Razorpay test checkout, dashboard capture, Render logs,
+and two signed HTTP replays]` Order `order_TVVWyByMSNDYa3` reserved 10,000
+paise: the deployed block read `spent=0`, `held=10000`. Capturing payment
+`pay_TVVZMykxzzrcva` produced event `TVVfkSQLpXzape`; the webhook changed the
+block once to `spent=10000`, `held=0`, `available=990000`. Two further signed
+requests reused that event ID. Both returned `accepted=true`, `applied=false`,
+`reason=duplicate_event`; Render logged one `capture_applied` and two
+`duplicate_event` no-ops. Razorpay's dashboard did not expose the original body,
+so the replays used a minimal valid signed JSON body with the identical event ID.
 
 ## Security controls
 

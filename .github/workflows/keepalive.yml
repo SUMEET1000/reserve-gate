@@ -1,0 +1,28 @@
+# Render's free tier spins a service down after 15 idle minutes and the cold
+# start then takes about a minute. This pings /health often enough that a judge
+# opening the URL gets a warm instance.
+#
+# The cadence is deliberate on both axes. Render grants 750 free instance hours
+# per workspace per month and suspends every free service in it once they are
+# gone; 24/7 costs 744 hours in a 31-day month, this window costs about 465.
+# The minutes are off the hour because GitHub names the top of the hour as a
+# high-load window for scheduled runs and may delay or drop a job there.
+#
+# This is a mitigation, not a guarantee: GitHub does not promise cron timing.
+# Warm the URL by hand five minutes before a demo or a panel call.
+name: keepalive
+
+on:
+  schedule:
+    - cron: '3,13,23,33,43,53 4-18 * * *'   # UTC, about 09:30-00:30 IST
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      # continue-on-error so a Render outage does not put a red X on the front
+      # page of the repository, which is the first thing a judge sees.
+      - name: Ping /health
+        continue-on-error: true
+        run: curl -fsS --max-time 90 https://reserve-gate.onrender.com/health

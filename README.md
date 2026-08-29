@@ -37,6 +37,11 @@ rule was gone — see [harness/mutation_report.md](harness/mutation_report.md).
 [harness/provenance.md](harness/provenance.md) traces every attack class to a
 source outside this repository, and names the one place that trace is still weak.
 
+[audit_sample.jsonl](audit_sample.jsonl) is a real run against Razorpay test mode, not a
+simulation: five orders placed through the gate and a sixth refused by the block cap, with the
+real order ids and the balance that was actually left. Its hash chain verifies from the first
+record.
+
 Copy `.env.example` to `.env` to talk to Razorpay test mode.
 
 Full documentation and the connection instructions land before submission.

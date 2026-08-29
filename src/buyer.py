@@ -12,12 +12,17 @@ tells it which rule fired and what is left.
                  machine, so a fresh clone can run it.
     --llm        a real model proposes the calls. The demo beat, not the
                  measurement. Needs GEMINI_API_KEY and requirements-llm.txt.
+    --live       one purchase carried all the way to settlement, so the block
+                 shows money spent and not only money held. Needs a Razorpay
+                 test key and a person to pay in a browser.
 
 The server is launched over stdio, so this whole loop is self-contained.
 """
 import argparse
 import asyncio
+import json
 import os
+import secrets
 import sys
 import tempfile
 
@@ -67,14 +72,31 @@ def text_of(result) -> str:
     return "".join(c.text for c in result.content if getattr(c, "text", None))
 
 
+def receipt_for(label: str, run_id: str) -> str:
+    """Turn a basket label into a Razorpay receipt.
+
+    Razorpay caps `receipt` at 40 ASCII characters (e5), and the baskets carry
+    an em dash, so the label is transliterated before it is cut. The run token
+    is what keeps a second run from re-sending a receipt the account has already
+    seen, which the API is documented to treat as a duplicate.
+    """
+    ascii_label = label.encode("ascii", "replace").decode("ascii").replace("?", "-")
+    return f"{ascii_label[:33]}-{run_id}"
+
+
 async def shop(session: ClientSession, basket) -> int:
     """Place every order in the basket. Returns how many were refused."""
     refused = 0
+    run_id = secrets.token_urlsafe(4)
     for i, (label, args) in enumerate(basket):
         print(f"\n> {label}")
         print(f"  create_order {args['amount']} {args['currency']}")
+        # The label rides along as the receipt so the order, and the audit
+        # record beside it, name the thing being bought instead of an amount on
+        # its own. It is never read by the policy: `Call` has no field for it.
         result = await session.call_tool(
-            "create_order", {**args, "idempotency_key": f"basket-{i}-{label[:20]}"})
+            "create_order", {**args, "receipt": receipt_for(label, run_id),
+                             "idempotency_key": f"basket-{i}-{label[:20]}"})
         body = text_of(result)
         if result.isError:
             refused += 1
@@ -84,8 +106,101 @@ async def shop(session: ClientSession, basket) -> int:
     return refused
 
 
+async def shop_live(session: ClientSession, db: str | None) -> None:
+    """One real purchase, start to finish, on one audit chain.
+
+    The scripted baskets stop at create_order, so the block only ever shows
+    money held and never money spent. This mode carries a single item through
+    to settlement: order here, payment in a browser because Razorpay's API
+    cannot make one, then capture back through the gate. All of it inside one
+    session, so the records form one unbroken hash chain rather than three runs
+    stitched together afterwards.
+
+    ~1 rupee, so a repeat take costs nothing and stays under the approval line.
+    """
+    label, args = "a live test purchase", {"amount": 10000, "currency": "INR"}
+    run_id = secrets.token_urlsafe(4)
+
+    print(f"> {label}\n  create_order {args['amount']} {args['currency']}")
+    result = await session.call_tool(
+        "create_order", {**args, "receipt": receipt_for(label, run_id),
+                         "idempotency_key": f"live-{run_id}"})
+    if result.isError:
+        print(f"  REFUSED   {text_of(result)}")
+        return
+    body = text_of(result)
+    print(f"  ALLOWED   {body[:300]}")
+
+    try:
+        order_id = json.loads(body)["id"]
+    except (ValueError, KeyError, TypeError):
+        print("\nCould not read an order id out of that reply. Stopping before"
+              " the capture rather than guessing one.")
+        return
+
+    print(f"\n  order id: {order_id}\n")
+    print("Now pay it. Razorpay's API cannot make a payment; a person has to.")
+    print("  1. open demo/pay.html in a browser")
+    print("  2. paste the rzp_test_ key id, and the order id above")
+    print("  3. pay with the domestic card 4100 2800 0000 1007, any future expiry, any CVV")
+    print("     4111 1111 1111 1111 is an international card and is declined unless")
+    print("     the account has enabled international payments")
+    print("  4. the page prints a payment_id when the payment is authorized")
+
+    payment_id = input("\npayment_id: ").strip()
+    if not payment_id:
+        print("Nothing entered. The reservation stays held until its TTL returns it.")
+        return
+
+    print(f"\n> capture {payment_id}")
+    captured = await session.call_tool(
+        "capture_payment", {"payment_id": payment_id, "amount": args["amount"],
+                            "currency": args["currency"],
+                            "idempotency_key": f"live-capture-{run_id}"})
+    print(f"  {'REFUSED ' if captured.isError else 'CAPTURED'}  {text_of(captured)[:400]}")
+
+    # Read straight from the ledger rather than reporting what the capture call
+    # returned: the number that matters is the one the block now holds. Reached
+    # through this payment's own reservation, because a ledger that has served
+    # more than one caller holds more than one block, and an unscoped read here
+    # printed a leftover block's untouched balance over a settlement that had
+    # actually committed (29 Aug 2026).
+    from . import ledger
+    conn = ledger.connect(db)
+    try:
+        row = conn.execute(
+            "SELECT b.reserved, b.spent, b.held FROM blocks b"
+            " JOIN reservations r ON r.block_id = b.block_id"
+            " WHERE r.payment_id = ?", (payment_id,)).fetchone()
+    finally:
+        conn.close()
+    if row:
+        print(f"\nblock: reserved {row['reserved']}  spent {row['spent']}"
+              f"  held {row['held']}")
+    else:
+        print("\nNo block found for that payment. Read audit.jsonl before trusting this run.")
+
+
+def print_turns(history) -> None:
+    """Print the tool calls the SDK made on the model's behalf.
+
+    Automatic function calling loops inside a single generate_content, so the
+    response text alone is the model's closing sentence and nothing else. A
+    cold reader of this repo counted one turn and concluded there was no loop
+    (29 Aug 2026). The refusals are the demo, so they are printed here.
+    """
+    for content in history or []:
+        for part in content.parts or []:
+            if part.function_call:
+                args = part.function_call.args or {}
+                print(f"\n> {part.function_call.name}"
+                      f" {args.get('amount')} {args.get('currency')}")
+            if part.function_response:
+                print(f"  gate: {str(part.function_response.response)[:300]}")
+
+
 async def shop_with_llm(session: ClientSession) -> None:
-    """One model turn with the gate's tools attached.
+    """A real model proposes the calls, and the gate answers each one.
 
     Imported here and not at module scope: --scripted must run in a clone with
     no model SDK installed, which is the whole reason it is the primary mode.
@@ -101,11 +216,19 @@ async def shop_with_llm(session: ClientSession) -> None:
         # only a real generateContent call is. Re-check before recording.
         model=os.environ.get("GEMINI_MODEL", "gemini-3.6-flash"),
         contents=LLM_PROMPT,
-        # temperature 0 because the video is timed to the second and a model at
-        # default temperature adds a preamble or picks a different tool.
-        config=types.GenerateContentConfig(temperature=0, tools=[session]),
+        config=types.GenerateContentConfig(
+            # temperature 0 because the video is timed to the second and a model
+            # at default temperature adds a preamble or picks a different tool.
+            temperature=0, tools=[session],
+            # 10 is also the SDK's own default. It is set here so the ceiling on
+            # a refused model's retries is visible in this file rather than in
+            # someone else's package.
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                maximum_remote_calls=10),
+        ),
     )
-    print(response.text)
+    print_turns(response.automatic_function_calling_history)
+    print(f"\n{response.text}")
 
 
 async def run(mode: str, db: str | None) -> None:
@@ -120,6 +243,8 @@ async def run(mode: str, db: str | None) -> None:
                   " tools offered\n")
             if mode == "llm":
                 return await shop_with_llm(session)
+            if mode == "live":
+                return await shop_live(session, db)
             refused = await shop(session, BASKETS[mode])
             print(f"\n{refused} of {len(BASKETS[mode])} calls refused by the gate.")
 
@@ -130,10 +255,14 @@ def main() -> None:
     p.add_argument("--overspend", action="store_true",
                    help="calls refused by policy alone; needs no key and no network")
     p.add_argument("--llm", action="store_true", help="a real model proposes the calls")
+    p.add_argument("--live", action="store_true",
+                   help="one purchase carried through to settlement; needs a browser payment")
     p.add_argument("--db", help="ledger file to use (default: reserve_gate.db)")
     a = p.parse_args()
     if a.llm:
         mode = "llm"
+    elif a.live:
+        mode = "live"
     elif a.overspend:
         mode = "overspend"
     else:

@@ -4,6 +4,7 @@ The deployed URL is public and holds a live payment credential, so an
 unauthenticated request must never reach the MCP layer.
 """
 import asyncio
+from datetime import timedelta
 
 import pytest
 from starlette.applications import Starlette
@@ -179,6 +180,70 @@ def test_only_a_known_refusal_hands_the_hold_back(monkeypatch, tmp_path, known, 
         asyncio.run(server._settle(conn, "create_order", ref, {}))
     assert ledger.snapshot(conn, caller).held == held_after
     conn.close()
+
+
+def test_an_unknown_capture_cannot_expire_before_reconciliation(monkeypatch, tmp_path):
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "unknown-capture.db"))
+    conn = ledger.connect()
+    cfg, caller, now = server.config(), server.caller_id(), ledger.now_utc()
+    ledger.init(conn, cfg, caller_id=caller, now=now)
+    _, order_ref = ledger.authorize(
+        conn, Call("create_order", caller, 50000, "INR", idem_key="unknown-order"),
+        cfg, now=now)
+    ledger.settle_order(conn, order_ref, order_id="order_unknown",
+                        result={"id": "order_unknown"})
+    capture = Call("capture_payment", caller, 50000, "INR", order_id="order_unknown",
+                   payment_id="pay_unknown", idem_key="unknown-capture")
+    _, capture_ref = ledger.authorize(conn, capture, cfg, now=now)
+
+    async def times_out(_tool, _args):
+        raise UpstreamError("reply lost", known=False)
+
+    monkeypatch.setattr(server, "call_razorpay", times_out)
+    with pytest.raises(ValueError, match="reply lost"):
+        asyncio.run(server._settle(conn, "capture_payment", capture_ref, {}))
+
+    later = now + timedelta(minutes=cfg.reservation_ttl_minutes, seconds=1)
+    ledger.authorize(conn, Call("create_order", caller, 100, "INR", idem_key="expiry-probe"),
+                     cfg, now=later)
+    reservation = conn.execute(
+        "SELECT state, outcome_unknown FROM reservations WHERE reservation_id = ?",
+        (capture_ref.reservation_id,)).fetchone()
+    assert (reservation["state"], reservation["outcome_unknown"]) == ("held", 1)
+
+    result = ledger.reconcile_webhook(
+        conn, "evt_unknown", "payment.captured",
+        {"id": "pay_unknown", "order_id": "order_unknown", "amount": 50000,
+         "currency": "INR", "status": "captured"}, now=later)
+    assert result["effect"] == "APPLY"
+    assert ledger.snapshot(conn, caller).spent == 50000
+    conn.close()
+
+
+def test_derived_keys_ignore_reworded_order_labels(monkeypatch, tmp_path):
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "labelled-orders.db"))
+    caller, calls = server.caller_id(), []
+
+    async def upstream(_tool, args):
+        calls.append(args)
+        return {"id": f"order_{len(calls)}"}
+
+    monkeypatch.setattr(server, "call_razorpay", upstream)
+    call = Call("create_order", caller, 50000, "INR")
+    first = asyncio.run(server._gated(
+        call, {"amount": 50000, "currency": "INR", "receipt": "keyboard"}))
+    second = asyncio.run(server._gated(
+        call, {"amount": 50000, "currency": "INR", "receipt": "monitor"}))
+    assert (first["id"], second["id"]) == ("order_1", "order_1")
+    assert [args["receipt"] for args in calls] == ["keyboard"]
+
+    keyed = Call("create_order", caller, 50000, "INR", idem_key="labelled-client-call")
+    asyncio.run(server._gated(
+        keyed, {"amount": 50000, "currency": "INR", "receipt": "keyboard"}))
+    with pytest.raises(ValueError, match="G16"):
+        asyncio.run(server._gated(
+            keyed, {"amount": 50000, "currency": "INR", "receipt": "monitor"}))
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize("payment", [

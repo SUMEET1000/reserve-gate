@@ -244,5 +244,20 @@ def test_connect_migrates_existing_sqlite_files(tmp_path):
     assert {"frozen_at", "freeze_reason"} <= {
         row["name"] for row in conn.execute("PRAGMA table_info(blocks)")}
     assert "payment_id" in {row["name"] for row in conn.execute("PRAGMA table_info(reservations)")}
+    assert "outcome_unknown" in {
+        row["name"] for row in conn.execute("PRAGMA table_info(reservations)")}
     assert "reservation_id" in {row["name"] for row in conn.execute("PRAGMA table_info(idempotency)")}
     conn.close()
+
+
+def test_a_signed_body_that_is_not_a_json_object_is_400(client):
+    """Valid JSON is not enough: a list parses and then has no event to read."""
+    r = signed(client, None, body=b"[1, 2, 3]")
+    assert r.status_code == 400
+
+
+def test_an_event_with_no_event_name_is_handled_as_unknown(client):
+    """Razorpay names the event; a delivery without one must not index into it."""
+    r = signed(client, {"payload": {"payment": {"entity": {"id": "pay_1"}}}},
+               event_id="evt_no_name")
+    assert r.status_code == 200

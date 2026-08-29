@@ -104,9 +104,18 @@ policy guards in turn and re-scores all 150 cases. Every removal is detected.
 external basis and states where evidence is still limited.
 
 [audit_sample.jsonl](audit_sample.jsonl) is the other half of the evidence: not a
-simulation but a real run against Razorpay test mode, with five orders placed
-through the gate, a sixth refused by the block cap, the real order ids, and the
-balance that was actually left. Its hash chain verifies from the first record.
+simulation but a real run against Razorpay test mode. Six orders placed through
+the gate with their real order ids, a seventh refused by the block cap, and one
+of them paid with a test card and captured back through `capture_payment`, which
+moved 10,000 paise from held to spent and closed with a `debit_committed` record.
+The block ends at reserved 1,000,000, spent 10,000, held 895,000. Its hash chain
+verifies from the first record, whose parent is null.
+
+Chain tail digest:
+`698448f71af0422efd15d5ce41167a817a2d484ee2ce3ccc10e2f072cc589856`. The chain is
+unkeyed, so on its own it catches an edited, deleted or reordered record but not
+a wholesale rewrite. This digest is committed here, beside the log it summarises,
+so a recomputed log no longer matches the value the repository already holds.
 
 ## Webhook reconciliation
 
@@ -212,6 +221,16 @@ token and does not implement an OAuth authorization server.
   SQLite block, dedupe ledger, and live audit log, recreating a full block. The
   server writes `COLD_START_LEDGER_RESET`, but the deployed URL cannot enforce a
   durable cap across that reset. Evaluation numbers come from persistent local runs.
+
+  The two obvious repairs were both checked and neither is available here. A free
+  Render web service cannot attach a persistent disk at all, so the storage fix
+  does not exist on this plan. Render's free Postgres expires 30 days after it is
+  created, which would place its deletion inside the review window — a database
+  that removes itself during judging is a worse failure than a stated limit,
+  because it fails silently and later. The durable store is therefore git: the
+  authoritative run happens locally and `eval_report.md` and `audit_sample.jsonl`
+  are committed, where a reader can re-verify the hash chain against a value the
+  repository already holds.
 - Pending approvals live in process memory. A restart forgets the approval link;
   the SQLite reservation still expires safely.
 - The hash chain does not stop a process owner from rewriting the whole log.

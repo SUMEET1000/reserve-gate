@@ -311,6 +311,33 @@ def test_a_derived_key_stops_a_retry_but_expires(conn):
     assert d3.outcome == ALLOW and d3.rule == "", d3
 
 
+def test_derived_keys_ignore_order_labels_but_client_keys_bind_them(conn):
+    first = {"amount": 50000, "currency": "INR", "receipt": "keyboard"}
+    second = {"amount": 50000, "currency": "INR", "receipt": "monitor"}
+    d, ref = ledger.authorize(conn, order(50000), CFG, now=NOW,
+                              idempotency_args=first)
+    ledger.settle_order(conn, ref, order_id="order_labelled", result={"id": "order_labelled"})
+
+    retry, _ = ledger.authorize(conn, order(50000), CFG, now=NOW,
+                                idempotency_args=second)
+    assert retry.rule == "R7" and retry.detail["replay"] is True, retry
+
+    keyed = order(50000, key="same-client-key")
+    ledger.authorize(conn, keyed, CFG, now=NOW, idempotency_args=first)
+    conflict, _ = ledger.authorize(conn, keyed, CFG, now=NOW, idempotency_args=second)
+    assert conflict.outcome == BLOCK and conflict.rule == "G16", conflict
+
+
+def test_notes_are_hashed_canonically(conn):
+    call = order(50000, key="notes-key")
+    left = {"amount": 50000, "currency": "INR", "notes": {"a": "1", "b": "2"}}
+    right = {"notes": {"b": "2", "a": "1"}, "currency": "INR", "amount": 50000}
+    _, ref = ledger.authorize(conn, call, CFG, now=NOW, idempotency_args=left)
+    ledger.settle_order(conn, ref, order_id="order_notes", result={"id": "order_notes"})
+    replay, _ = ledger.authorize(conn, call, CFG, now=NOW, idempotency_args=right)
+    assert replay.rule == "R7" and replay.detail["replay"] is True, replay
+
+
 def test_velocity_stops_a_runaway_loop(conn):
     """B24, OWASP LLM06:2026. The counter lives in the database and is read and
     written inside the same transaction as the decision."""
@@ -738,3 +765,138 @@ def test_a_capture_reply_that_says_captured_still_commits(conn):
     assert ledger.settle_capture(
         conn, ref2, result={"id": "pay_G", "status": "captured"}, now=NOW) == "committed"
     assert balance(conn) == (50000, 0, 950000)
+
+
+class FailsOn:
+    """A connection that raises on the first statement containing `needle`.
+
+    The rollback clauses below are unreachable against a healthy SQLite —
+    nothing inside those transactions fails on demand — so they had shipped
+    unproven. Forcing the failure is the only way to show the clause is reached
+    and that the balance it guards is left exactly as it was.
+    """
+
+    def __init__(self, conn, needle):
+        self.conn, self.needle, self.rolled_back = conn, needle, False
+
+    def execute(self, sql, *args):
+        if self.needle in sql:
+            raise sqlite3.OperationalError(f"forced failure on: {self.needle}")
+        if sql.strip().upper().startswith("ROLLBACK"):
+            self.rolled_back = True
+        return self.conn.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self.conn, name)
+
+
+def test_a_failed_order_binding_rolls_back_and_raises(conn):
+    """Binding the order id and storing the reply are one unit. Half of it would
+    leave a reservation Razorpay's id points at and no result for R7 to replay."""
+    _, ref = ledger.authorize(conn, order(50000), CFG, now=NOW)
+    failing = FailsOn(conn, "UPDATE idempotency SET result")
+    with pytest.raises(sqlite3.OperationalError):
+        ledger.settle_order(failing, ref, order_id="order_R", result={"id": "order_R"})
+    assert failing.rolled_back
+    row = conn.execute("SELECT order_id FROM reservations WHERE reservation_id = ?",
+                       (ref.reservation_id,)).fetchone()
+    assert row["order_id"] is None
+    assert balance(conn) == (0, 50000, 950000)
+
+
+def test_a_failed_release_leaves_the_hold_in_place(conn):
+    """G14: a half-applied release hands the balance back for money that may
+    still be moving upstream, and the next call spends it again."""
+    _, ref = ledger.authorize(conn, order(50000), CFG, now=NOW)
+    failing = FailsOn(conn, "DELETE FROM idempotency")
+    with pytest.raises(sqlite3.OperationalError):
+        ledger.release(failing, ref, reason="upstream timeout", now=NOW)
+    assert failing.rolled_back
+    assert balance(conn) == (0, 50000, 950000)
+
+
+def test_a_failed_hold_renewal_rolls_back_and_raises(conn):
+    _, ref = ledger.authorize(conn, order(300000), CFG, now=NOW)
+    failing = FailsOn(conn, "UPDATE reservations SET expires_at")
+    with pytest.raises(sqlite3.OperationalError):
+        ledger.renew_hold(failing, ref, CFG.reservation_ttl_minutes, now=NOW)
+    assert failing.rolled_back
+    assert balance(conn) == (0, 300000, 700000)
+
+
+def test_a_failed_revoke_leaves_the_block_live(conn):
+    """R4 must not report a revocation it did not perform: the caller would stop
+    watching a block that still spends."""
+    block_id = ledger.snapshot(conn, CALLER).block_id
+    failing = FailsOn(conn, "UPDATE blocks SET revoked_at")
+    with pytest.raises(sqlite3.OperationalError):
+        ledger.revoke(failing, block_id, now=NOW)
+    assert failing.rolled_back
+    assert ledger.snapshot(conn, CALLER).revoked_at is None
+
+
+def test_a_failed_unfreeze_leaves_the_block_frozen(conn):
+    block_id = ledger.snapshot(conn, CALLER).block_id
+    conn.execute("UPDATE blocks SET frozen_at = ?, freeze_reason = ? WHERE block_id = ?",
+                 (ledger.iso(NOW), "an earlier conflict", block_id))
+    failing = FailsOn(conn, "UPDATE blocks SET frozen_at = NULL")
+    with pytest.raises(sqlite3.OperationalError):
+        ledger.unfreeze(failing, block_id)
+    assert failing.rolled_back
+    assert ledger.snapshot(conn, CALLER).frozen_at is not None
+
+
+def test_a_capture_reply_carrying_no_payment_id_raises(conn):
+    """B26: a capture that cannot be identified is surfaced, never booked. The
+    hold stays held, because the money may well have moved."""
+    _, ref = ledger.authorize(conn, order(50000), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_N", result={"id": "order_N"})
+    cap = Call(tool="capture_payment", caller_id=CALLER, amount=50000,
+               currency="INR", order_id="order_N")
+    _, ref2 = ledger.authorize(conn, cap, CFG, now=NOW)
+    with pytest.raises(RuntimeError, match="payment id"):
+        ledger.settle_capture(conn, ref2, result={"status": "captured"})
+    assert balance(conn) == (0, 50000, 950000)
+
+
+def test_a_capture_after_the_block_expired_still_commits(conn):
+    """B12/G14. Razorpay has already taken the money. Refusing to record it would
+    make the ledger claim the money still exists after it moved."""
+    _, ref = ledger.authorize(conn, order(50000), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_E", result={"id": "order_E"})
+    cap = Call(tool="capture_payment", caller_id=CALLER, amount=50000,
+               currency="INR", order_id="order_E")
+    _, ref2 = ledger.authorize(conn, cap, CFG, now=NOW)
+    after_expiry = NOW + timedelta(days=CFG.expires_days + 1)
+    assert ledger.settle_capture(conn, ref2, result={"id": "pay_E"},
+                                 now=after_expiry) == "committed"
+    assert balance(conn) == (50000, 0, 950000)
+
+
+def test_a_captured_event_with_no_order_id_is_rejected(conn):
+    """The order id is the only thing joining an event to a reservation, so an
+    event without one is refused before anything is looked up."""
+    out = ledger.reconcile_webhook(conn, "evt_no_order", "payment.captured",
+                                   {"id": "pay_X"}, now=NOW)
+    assert out["effect"] == "REJECT" and out["reason"] == "invalid_payment"
+    assert out["applied"] is False
+
+
+def test_a_matching_event_against_a_frozen_block_is_rejected(conn):
+    """Every money field agrees; the block is frozen, so it still refuses. A
+    freeze means an unreconciled conflict, and settling into one hides it."""
+    _, ref = ledger.authorize(conn, order(50000), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_F", result={"id": "order_F"})
+    block_id = ledger.snapshot(conn, CALLER).block_id
+    conn.execute("UPDATE blocks SET frozen_at = ?, freeze_reason = ? WHERE block_id = ?",
+                 (ledger.iso(NOW), "an earlier conflict", block_id))
+    out = ledger.reconcile_webhook(
+        conn, "evt_frozen", "payment.captured",
+        {"id": "pay_F", "order_id": "order_F", "amount": 50000,
+         "currency": "INR", "status": "captured"}, now=NOW)
+    assert out["effect"] == "REJECT" and out["reason"] == "block_frozen"
+    assert balance(conn) == (0, 50000, 950000)
+
+
+def test_a_caller_with_no_block_has_no_snapshot(conn):
+    assert ledger.snapshot(conn, "a-caller-that-was-never-issued-a-block") is None

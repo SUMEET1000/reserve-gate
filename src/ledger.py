@@ -9,7 +9,7 @@ tests/test_ledger.py::test_two_concurrent_calls_cannot_both_pass.
 Money moves in two phases (G14). create_order holds the amount before the
 upstream call and settle_order or release closes it out; capture_payment turns a
 hold into spend only once Razorpay has confirmed. Nothing is ever debited before
-the call it pays for, and nothing stays held after that call has failed.
+the call it pays for, and only a failure whose outcome is known releases it.
 """
 import hashlib
 import json
@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS reservations (
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   settled_at TEXT,
-  payment_id TEXT
+  payment_id TEXT,
+  outcome_unknown INTEGER NOT NULL DEFAULT 0 CHECK (outcome_unknown IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS idempotency (
@@ -94,6 +95,8 @@ MIGRATIONS = (
      "ALTER TABLE blocks ADD COLUMN freeze_reason TEXT"),
     ("payment_id", "PRAGMA table_info(reservations)",
      "ALTER TABLE reservations ADD COLUMN payment_id TEXT"),
+    ("outcome_unknown", "PRAGMA table_info(reservations)",
+     "ALTER TABLE reservations ADD COLUMN outcome_unknown INTEGER NOT NULL DEFAULT 0"),
     ("reservation_id", "PRAGMA table_info(idempotency)",
      "ALTER TABLE idempotency ADD COLUMN reservation_id TEXT"),
 )
@@ -138,26 +141,31 @@ def caller_id_for(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()[:16]
 
 
-def args_hash(call: Call) -> str:
+def args_hash(call: Call, idempotency_args: dict | None = None) -> str:
     """What an idempotency key is bound to. Same key, different parameters is a
     conflict rather than a replay (G16), or an attacker registers a key against
     a 1-rupee call and the victim's real call returns its 'success'.
 
-    The caller is part of the digest, as R7 specifies. This value doubles as the
-    derived key when a client sends none, and two callers making an identical
-    call must not derive the same one — the second would replay the first's
-    order instead of placing its own.
+    The caller is part of the digest, as R7 specifies. Without
+    `idempotency_args` this is the stable, money-only derived key: model-written
+    notes and receipts may change when a retry is regenerated. Full upstream
+    arguments are included only to bind a client-supplied key for G16.
     """
     # Currency is upper-cased to match R0, which treats "inr" and "INR" as one
     # call. Hashing them apart would derive two keys for a single purchase, and
     # a retry that varies the case becomes a second real order — the duplicate
     # the derived key exists to stop.
-    canonical = json.dumps({"caller_id": call.caller_id, "tool": call.tool,
-                            "amount": call.amount,
-                            "currency": call.currency.upper()
-                            if isinstance(call.currency, str) else call.currency,
-                            "order_id": call.order_id, "payment_id": call.payment_id},
-                           sort_keys=True)
+    values = {"caller_id": call.caller_id, "tool": call.tool,
+              "amount": call.amount,
+              "currency": call.currency.upper()
+              if isinstance(call.currency, str) else call.currency,
+              "order_id": call.order_id, "payment_id": call.payment_id}
+    if idempotency_args is not None:
+        upstream = dict(idempotency_args)
+        if isinstance(upstream.get("currency"), str):
+            upstream["currency"] = upstream["currency"].upper()
+        values["upstream_args"] = upstream
+    canonical = json.dumps(values, sort_keys=True)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
@@ -235,7 +243,8 @@ def _expire_stale(conn: sqlite3.Connection, now: datetime) -> None:
     key, so the retry that should now be a fresh call collides on INSERT instead.
     """
     for r in conn.execute("SELECT reservation_id, block_id, amount FROM reservations"
-                          " WHERE state = 'held' AND expires_at <= ?", (iso(now),)).fetchall():
+                          " WHERE state = 'held' AND outcome_unknown = 0 AND expires_at <= ?",
+                          (iso(now),)).fetchall():
         conn.execute("UPDATE reservations SET state = 'released', settled_at = ?"
                      " WHERE reservation_id = ?", (iso(now), r["reservation_id"]))
         conn.execute("UPDATE blocks SET held = held - ? WHERE block_id = ?",
@@ -247,13 +256,13 @@ def _expire_stale(conn: sqlite3.Connection, now: datetime) -> None:
 
 
 def _load_state(conn: sqlite3.Connection, call: Call, key: str, now: datetime,
-                velocity: int) -> State:
+                velocity: int, bound_hash: str) -> State:
     block = snapshot(conn, call.caller_id)
     row = conn.execute(
         "SELECT args_hash, result FROM idempotency"
         " WHERE caller_id = ? AND key = ? AND (expires_at IS NULL OR expires_at > ?)",
         (call.caller_id, key, iso(now))).fetchone()
-    conflict = bool(row) and row["args_hash"] != args_hash(call)
+    conflict = bool(row) and row["args_hash"] != bound_hash
     replay = json.loads(row["result"]) if row and not conflict and row["result"] else None
     in_flight = bool(row) and not conflict and row["result"] is None
 
@@ -277,13 +286,23 @@ def _load_state(conn: sqlite3.Connection, call: Call, key: str, now: datetime,
 
 
 def authorize(conn: sqlite3.Connection, call: Call, config: Config, *,
-              now: datetime | None = None) -> tuple[Decision, Ref | None]:
+              now: datetime | None = None,
+              receipt: str | None = None,
+              idempotency_args: dict | None = None) -> tuple[Decision, Ref | None]:
     """Take the decision and record it, atomically.
 
     Returns the decision and, when money may move, the reservation id the caller
     must later settle or release. Everything from the balance read to the write
     happens under one write lock: two concurrent calls that each fit the block
     but together exceed it must not both see the same balance (B07).
+
+    `receipt` is the caller's own label for the purchase and is written to the
+    audit record so the trail names what was bought rather than an amount on its
+    own. It is deliberately a parameter here and not a field on `Call`: the
+    decision function must stay unable to read caller-supplied free text, which
+    is the structural half of B15. `idempotency_args` binds that free text to a
+    client-supplied key without exposing it to the decision; derived keys ignore
+    it so a reworded retry still collides.
     """
     now = now or now_utc()
 
@@ -299,6 +318,8 @@ def authorize(conn: sqlite3.Connection, call: Call, config: Config, *,
         # values: an argument it cannot serialise has to fail closed through the
         # G4 handler below rather than raise past it.
         key = call.idem_key or args_hash(call)
+        bound_hash = (args_hash(call, idempotency_args)
+                      if call.idem_key else args_hash(call))
         derived = call.idem_key is None
         _expire_stale(conn, now)
         window = iso(now - timedelta(minutes=config.velocity_window_minutes))
@@ -306,7 +327,7 @@ def authorize(conn: sqlite3.Connection, call: Call, config: Config, *,
         # transaction; two statements outside one is the bypass.
         count = conn.execute("SELECT COUNT(*) c FROM money_calls WHERE caller_id = ? AND ts > ?",
                              (call.caller_id, window)).fetchone()["c"]
-        state = _load_state(conn, call, key, now, count)
+        state = _load_state(conn, call, key, now, count, bound_hash)
 
         d = decide(call, state, config, now)
         ref = None
@@ -327,7 +348,7 @@ def authorize(conn: sqlite3.Connection, call: Call, config: Config, *,
             conn.execute(
                 "INSERT INTO idempotency (key, caller_id, tool, args_hash, created_at, expires_at,"
                 " reservation_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (key, call.caller_id, call.tool, args_hash(call), iso(now),
+                (key, call.caller_id, call.tool, bound_hash, iso(now),
                  iso(now + timedelta(seconds=config.derived_key_ttl_seconds)) if derived else None,
                  reservation_id))
             if call.tool == "create_order":
@@ -357,7 +378,7 @@ def authorize(conn: sqlite3.Connection, call: Call, config: Config, *,
 
     audit.record(event=d.outcome.lower(), kind="money", tool=call.tool, rule=d.rule,
                  reason=d.reason, caller_id=call.caller_id, amount=call.amount,
-                 currency=call.currency, idem_key_derived=derived,
+                 currency=call.currency, receipt=receipt, idem_key_derived=derived,
                  block_id=state.block.block_id if state.block else None,
                  reservation_id=reservation_id, detail=d.detail)
     return d, ref
@@ -381,8 +402,8 @@ def settle_order(conn: sqlite3.Connection, ref: Ref, *, order_id: str, result: d
 
 def release(conn: sqlite3.Connection, ref: Ref, *, reason: str,
             now: datetime | None = None) -> None:
-    """B25. Razorpay refused or timed out after the policy said ALLOW. The hold
-    goes back to the block; a failed call must never burn the balance."""
+    """B25. Razorpay proved the call failed after policy said ALLOW. The hold
+    goes back to the block; a known failed call must never burn the balance."""
     now = now or now_utc()
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -402,6 +423,21 @@ def release(conn: sqlite3.Connection, ref: Ref, *, reason: str,
         conn.execute("ROLLBACK")
         raise
     audit.record(event="reservation_released", reservation_id=ref.reservation_id, reason=reason)
+
+
+def mark_capture_pending(conn: sqlite3.Connection, ref: Ref) -> None:
+    """Keep this hold until a verified capture outcome reconciles it."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        cur = conn.execute("UPDATE reservations SET outcome_unknown = 1"
+                           " WHERE reservation_id = ? AND state = 'held'",
+                           (ref.reservation_id,))
+        if cur.rowcount != 1:
+            raise RuntimeError(f"reservation {ref.reservation_id} is not held")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def renew_hold(conn: sqlite3.Connection, ref: Ref, ttl_minutes: int, *,
@@ -455,6 +491,8 @@ def settle_capture(conn: sqlite3.Connection, ref: Ref, *, result: dict,
             raise RuntimeError("captured result has no payment id")
         status = result.get("status")
         if status is not None and status != "captured":
+            conn.execute("UPDATE reservations SET outcome_unknown = 0"
+                         " WHERE reservation_id = ?", (ref.reservation_id,))
             conn.execute("COMMIT")
             audit.record(event="capture_not_captured", reservation_id=ref.reservation_id,
                          payment_id=payment_id, status=str(status))

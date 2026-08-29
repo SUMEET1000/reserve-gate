@@ -94,6 +94,10 @@ def _refusal(decision) -> ValueError:
 
 async def _settle(conn, tool: str, ref: ledger.Ref, args: dict) -> Any:
     """Forward an approved call and close out the hold it is standing on."""
+    if tool == "capture_payment":
+        # Persist before the network call: a process death after Razorpay acts
+        # must not let the ordinary reservation TTL return possibly-spent money.
+        ledger.mark_capture_pending(conn, ref)
     try:
         result = await call_razorpay(tool, args)
     except UpstreamError as e:
@@ -103,8 +107,8 @@ async def _settle(conn, tool: str, ref: ledger.Ref, args: dict) -> Any:
             ledger.release(conn, ref, reason=str(e))
         else:
             # G14 / B25b. A timeout says nothing about whether Razorpay acted.
-            # The hold stays until reconciliation or its TTL; releasing it would
-            # hand back a balance that was really spent.
+            # The hold stays until reconciliation; releasing or expiring it
+            # would hand back a balance that was really spent.
             audit.record(event="outcome_unknown", tool=tool, reservation_id=ref.reservation_id,
                          error=str(e), note="hold kept: the upstream outcome is unknown")
         raise ValueError(f"{tool} failed upstream: {e}") from None
@@ -124,7 +128,10 @@ async def _gated(call: Call, args: dict) -> Any:
     conn = ledger.connect()
     try:
         ledger.init(conn, config(), caller_id=call.caller_id)
-        decision, ref = ledger.authorize(conn, call, config())
+        # Full args bind client keys; derived keys ignore unstable free text.
+        # Call stays free-text-free so the policy decision cannot read it (B15).
+        decision, ref = ledger.authorize(
+            conn, call, config(), receipt=args.get("receipt"), idempotency_args=args)
 
         if decision.outcome == HOLD:
             _HOLDS[ref.reservation_id] = (call.tool, args, ref)

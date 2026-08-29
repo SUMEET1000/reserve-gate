@@ -46,6 +46,7 @@ def test_r0_refuses_anything_that_is_not_an_int(amount):
     """B04, e1. A bool is an int to isinstance, so the check is `type() is not int`."""
     d = run(order(amount))
     assert d.outcome == BLOCK and d.rule == "R0", d
+    assert type(amount) is int or type(amount).__name__ in d.reason, d
 
 
 @pytest.mark.parametrize("amount", [-1, 0, 99, 10 ** 9 + 1, 10 ** 19])
@@ -368,3 +369,25 @@ def test_duplicate_json_keys_cannot_smuggle_a_second_amount():
     assert json.loads('{"amount": 1, "amount": 999999}') == {"amount": 999999}
     args = inspect.signature(upstream.call_razorpay).parameters["args"]
     assert args.annotation is dict, "the forwarder must take a parsed object, never raw bytes"
+
+
+def test_a_cap_larger_than_the_block_is_refused_at_load(tmp_path):
+    """A max_txn above the block means R1 always refuses before R5 can, so the
+    per-call cap quietly stops being a control while still reading as one."""
+    p = tmp_path / "cap_over_block.yaml"
+    p.write_text(
+        "block: {reserved: 100000, currency: INR, expires_days: 30}\n"
+        "rules: {max_txn: 500000, approval_over: 200000, velocity_calls: 10,\n"
+        "        velocity_window_minutes: 1, reservation_ttl_minutes: 15,\n"
+        "        derived_key_ttl_seconds: 300}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="larger than the block"):
+        load_config(str(p))
+
+
+def test_a_capture_naming_a_payment_the_reservation_does_not_hold_blocks():
+    """G2. The reservation already carries a payment id, so a second one against
+    it is a different payment wearing the first payment's reservation."""
+    call = Call(tool="capture_payment", caller_id=CALLER, amount=50000,
+                currency="INR", order_id="order_X", payment_id="pay_second")
+    d = run(call, reservation=reservation(payment_id="pay_first"))
+    assert d.outcome == BLOCK and d.rule == "R0", d

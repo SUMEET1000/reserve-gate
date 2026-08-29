@@ -106,3 +106,62 @@ def test_a_recomputed_log_defeats_verify_but_not_the_published_tail(log, tmp_pat
 
     assert audit.verify(str(forged)) == (True, None), "the chain alone cannot see this"
     assert audit.tail_hash(str(forged)) != published, "the published tail must"
+
+
+def test_a_secret_inside_a_list_is_redacted(tmp_path, monkeypatch):
+    """G6. Scrubbing walked dicts and strings; a token sitting in a list would
+    have reached the log intact."""
+    monkeypatch.setenv("RESERVE_GATE_AUDIT", str(tmp_path / "a.jsonl"))
+    monkeypatch.setenv("RESERVE_GATE_TOKEN", "a-token-that-must-not-be-logged")
+    monkeypatch.setattr(audit, "_prev_hash", None)
+    monkeypatch.setattr(audit, "_prev_path", None)
+    rec = audit.record(event="allow", trail=["clean", "a-token-that-must-not-be-logged"])
+    assert rec["trail"] == ["clean", audit.REDACTED]
+    assert "a-token-that-must-not-be-logged" not in json.dumps(rec)
+
+
+def test_the_tail_of_a_file_ending_in_a_broken_line_is_none(tmp_path):
+    """The tail seeds the next record's prev_hash. Guessing one off a corrupt
+    line would chain a real record onto a value nothing can reproduce."""
+    p = tmp_path / "a.jsonl"
+    p.write_text("this line is not json\n", encoding="utf-8")
+    assert audit.tail_hash(str(p)) is None
+
+
+def test_a_record_that_cannot_be_serialised_degrades_instead_of_raising(tmp_path, monkeypatch):
+    """G4. An audit write that raised would refuse an honest call, so a field
+    that will not serialise becomes a marker and the chain stays intact.
+
+    A plain object() is not enough: `_canonical` passes `default=str`, so almost
+    anything renders. Only a value whose own rendering fails reaches the clause,
+    which is what this stands in for.
+    """
+    class WillNotRender:
+        def __str__(self):
+            raise ValueError("this value cannot be rendered")
+        __repr__ = __str__
+
+    monkeypatch.setenv("RESERVE_GATE_AUDIT", str(tmp_path / "a.jsonl"))
+    monkeypatch.setattr(audit, "_prev_hash", None)
+    monkeypatch.setattr(audit, "_prev_path", None)
+    rec = audit.record(event="allow", tool="create_order", bad=WillNotRender())
+    assert rec["error"] == "record not serialisable"
+    assert rec["event"] == "allow"
+    assert audit.verify(str(tmp_path / "a.jsonl")) == (True, None)
+
+
+def test_verifying_a_file_that_does_not_exist_is_false(tmp_path):
+    """A judge running verify() against a missing log must be told so, not
+    handed a True that means the loop never ran."""
+    assert audit.verify(str(tmp_path / "no-such-log.jsonl")) == (False, None)
+
+
+def test_a_blank_line_does_not_break_the_chain(log):
+    rewrite(log, lines(log)[:2] + [""] + lines(log)[2:])
+    assert audit.verify(str(log)) == (True, None)
+
+
+def test_a_line_that_is_not_json_fails_at_its_own_line_number(log):
+    """B22 reports where the log stopped being trustworthy, not merely that it did."""
+    rewrite(log, lines(log)[:2] + ["{ not json"] + lines(log)[2:])
+    assert audit.verify(str(log)) == (False, 3)

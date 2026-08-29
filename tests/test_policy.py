@@ -290,3 +290,81 @@ def test_free_text_has_nowhere_to_reach_the_decision():
                       "idem_key"}
     for free_text in ("notes", "receipt", "description", "customer", "address", "error"):
         assert free_text not in fields, f"{free_text} would give a payload a way in"
+
+
+# Three claims the code makes by construction. Each was true and untested until
+# 29 Aug 2026: a structural claim with no assertion behind it is one refactor
+# away from being false quietly, and it goes quiet without a single test turning
+# red. Same shape as the B15 test above - assert the shape, not a list of values.
+
+def test_the_clock_belongs_to_the_server_alone():
+    """B11. Expiry, the reservation TTL and the velocity window are all decided
+    against `now`. If a caller could name it, R2 and R6 would both be advisory.
+
+    decide() does take `now` as a parameter, which is deliberate: G5 wants a
+    testable decision. What closes the hole is that the parameter is filled by
+    ledger.authorize() from the server clock, and that no field a caller can
+    populate carries a time at all.
+    """
+    import ast
+    import inspect
+    import pathlib
+
+    from src import ledger
+
+    timeish = {"now", "time", "timestamp", "date", "clock", "expires_at", "created_at"}
+    assert not (set(Call.__dataclass_fields__) & timeish), "a caller could name the time"
+
+    # The two money tools, read from source rather than through FastMCP's
+    # wrapper, so this keeps working if the decorator's internals change.
+    source = pathlib.Path(inspect.getfile(ledger)).with_name("server.py")
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    tools = {n.name: n for n in ast.walk(tree)
+             if isinstance(n, ast.AsyncFunctionDef) and n.name in ("create_order", "capture_payment")}
+    assert set(tools) == {"create_order", "capture_payment"}, tools
+    for name, fn in tools.items():
+        taken = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
+        assert not (taken & timeish), f"{name} accepts a caller-supplied time: {taken & timeish}"
+
+    # And the default is the server clock, not something forwarded in.
+    assert inspect.signature(ledger.authorize).parameters["now"].default is None
+    assert "now = now or now_utc()" in inspect.getsource(ledger.authorize)
+
+
+def test_the_upstream_url_can_only_come_from_config():
+    """B23. A caller-supplied upstream would make the proxy an SSRF gadget that
+    holds a live Razorpay credential and forwards it. The URL is a module
+    constant, and there is no parameter through which a request could name
+    another one.
+    """
+    import ast
+    import inspect
+
+    from src import upstream
+
+    assert upstream.UPSTREAM_URL == "https://mcp.razorpay.com/mcp"
+    assert list(inspect.signature(upstream.call_razorpay).parameters) == ["tool", "args"]
+
+    opened = [n for n in ast.walk(ast.parse(inspect.getsource(upstream)))
+              if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "streamablehttp_client"]
+    assert len(opened) == 1, "one place opens the transport, or this check means nothing"
+    target = opened[0].args[0]
+    assert isinstance(target, ast.Name) and target.id == "UPSTREAM_URL", \
+        "the transport is opened on something other than the pinned constant"
+
+
+def test_duplicate_json_keys_cannot_smuggle_a_second_amount():
+    """B29. `{"amount": 1, "amount": 999999}` is only a bypass if the proxy
+    decides on one value and forwards bytes carrying both. Python keeps the last
+    key, so one value survives parsing, and the forwarder takes a parsed dict
+    rather than a body - so upstream cannot be shown a different number than the
+    one the policy judged. That is G18, parse once and forward the object.
+    """
+    import inspect
+    import json
+
+    from src import upstream
+
+    assert json.loads('{"amount": 1, "amount": 999999}') == {"amount": 999999}
+    args = inspect.signature(upstream.call_razorpay).parameters["args"]
+    assert args.annotation is dict, "the forwarder must take a parsed object, never raw bytes"

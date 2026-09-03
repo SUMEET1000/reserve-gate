@@ -3,7 +3,11 @@ services:
     name: reserve-gate
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    # requirements-llm.txt is deliberately separate so the tests and the scripted
+    # buyer never pull a model SDK. The deployed instance installs it because the
+    # demo site's "ask a real model" box needs it; without it that box falls back
+    # to the recorded run rather than erroring.
+    buildCommand: pip install -r requirements.txt -r requirements-llm.txt
     startCommand: python -m src.server --http
     healthCheckPath: /health
     envVars:
@@ -22,4 +26,8 @@ services:
       # The operator's secret. The service refuses to start without it, so that
       # /approve and /revoke can never fall back to the agent's own credential.
       - key: RESERVE_GATE_ADMIN_TOKEN
+        sync: false
+      # Optional. Only the demo site's model box reads it, under a daily call
+      # budget; unset, that box serves web/recorded_llm_run.json instead.
+      - key: GEMINI_API_KEY
         sync: false

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en" data-skin="night">
+<head>
+<link rel="icon" href="/razorpay-logo.png" type="image/png">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>reserve-gate — the numbers, and my own gaps</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<!-- The shell names the page; src/main.jsx maps that name to a component. The
+     server keeps serving seven files at seven exact paths, because PUBLIC_PATHS
+     is a closed set and a client-side router would need a catch-all instead. -->
+<body class="evidence" data-page="evidence">
+<div id="root"></div>
+<noscript>
+  <p style="padding:2rem;font:16px sans-serif">
+    reserve-gate's demo pages are rendered in the browser. The gate itself is a
+    Python MCP server and needs no JavaScript: clone the repo and run
+    <code>pytest &amp;&amp; python -m src.buyer --scripted --overspend</code>.
+  </p>
+</noscript>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+{
+  "_comment": "The shop's shelf. `basket` is the agent's shopping order in src/buyer.py; the six amounts there are the ones every eval number was measured against, so change a price here and the buyer's outcomes move with it.",
+  "currency": "INR",
+  "items": [
+    {"id": "headphones",    "name": "noise-cancelling headphones", "paise": 180000, "basket": 1},
+    {"id": "keyboard",      "name": "mechanical keyboard",         "paise": 150000, "basket": 2},
+    {"id": "monitor-arm",   "name": "monitor arm",                 "paise": 200000, "basket": 3},
+    {"id": "desk-lamp",     "name": "desk lamp",                   "paise": 190000, "basket": 4},
+    {"id": "laptop-stand",  "name": "laptop stand",                "paise": 175000, "basket": 5},
+    {"id": "monitor-arm-2", "name": "a second monitor arm",        "paise": 200000, "basket": 6},
+
+    {"id": "mouse",         "name": "wireless mouse",              "paise": 4900},
+    {"id": "usb-hub",       "name": "7-port USB hub",              "paise": 12900},
+    {"id": "webcam",        "name": "1080p webcam",                "paise": 34900},
+    {"id": "mic",           "name": "condenser microphone",        "paise": 79900},
+    {"id": "chair-mat",     "name": "chair mat",                   "paise": 89900},
+    {"id": "footrest",      "name": "adjustable footrest",         "paise": 99900},
+    {"id": "cable-tray",    "name": "under-desk cable tray",       "paise": 149900},
+    {"id": "monitor-27",    "name": "27-inch monitor",             "paise": 320000},
+    {"id": "dock",          "name": "Thunderbolt dock",            "paise": 450000},
+    {"id": "chair",         "name": "ergonomic chair",             "paise": 490000},
+    {"id": "standing-desk", "name": "standing desk",               "paise": 620000},
+    {"id": "television",    "name": "55-inch television",          "paise": 780000}
+  ]
+}

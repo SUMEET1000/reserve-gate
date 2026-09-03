@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import json
 import os
+import pathlib
 import secrets
 import sys
 import tempfile
@@ -29,20 +30,27 @@ import tempfile
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-# Amounts are paise. policy.yaml gives a 1,000,000 block, a 500,000 per-call cap
-# and a 200,000 approval line, and these baskets are written against those three
-# numbers — change the policy and the expected outcomes below move with it.
+# The shop's shelf is web/catalogue.json and the agent's basket is the `basket`
+# field in it, so the page a judge browses and the run the eval numbers came from
+# cannot drift apart. Amounts are paise. policy.yaml gives a 1,000,000 block, a
+# 500,000 per-call cap and a 200,000 approval line, and the basket is written
+# against those three numbers - change either file and the outcomes move.
+CATALOGUE = json.loads(
+    (pathlib.Path(__file__).resolve().parent.parent / "web" / "catalogue.json")
+    .read_text(encoding="utf-8"))
+
+
+def basket_from_catalogue() -> list[tuple[str, dict]]:
+    """Five purchases the block can pay for, then one it cannot. The last line
+    is the point: the refusal names R1 and prints what is actually left."""
+    shopping = sorted((i for i in CATALOGUE["items"] if i.get("basket")),
+                      key=lambda i: i["basket"])
+    return [(i["name"], {"amount": i["paise"], "currency": CATALOGUE["currency"]})
+            for i in shopping]
+
+
 BASKETS = {
-    # Five purchases the block can pay for, then one it cannot. The last line is
-    # the point: the refusal names R1 and prints what is actually left.
-    "scripted": [
-        ("noise-cancelling headphones", {"amount": 180000, "currency": "INR"}),
-        ("mechanical keyboard", {"amount": 150000, "currency": "INR"}),
-        ("monitor arm", {"amount": 200000, "currency": "INR"}),
-        ("desk lamp", {"amount": 190000, "currency": "INR"}),
-        ("laptop stand", {"amount": 175000, "currency": "INR"}),
-        ("second monitor arm — past the block", {"amount": 200000, "currency": "INR"}),
-    ],
+    "scripted": basket_from_catalogue(),
     # Every one of these is decided before any upstream call, so this basket
     # runs with no Razorpay key and no network at all. The two holds are what
     # make the last line reachable offline: a hold encumbers the block while it

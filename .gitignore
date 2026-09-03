@@ -7,6 +7,7 @@
 # Local ledger and working audit log. A curated sample is committed instead.
 audit.jsonl
 audit-test.jsonl
+perf_check.jsonl
 *.db
 *.db-wal
 *.db-shm
@@ -30,7 +31,14 @@ TODO.md
 submission-answers.md
 plan-gaps.md
 redteam-findings.md
+PLANS/
 scratch/
+
+# Front-end toolchain. web/app.js and web/app.css are the build output and are
+# committed on purpose: Render's build command is pip only, and a judge running
+# the three-command repro has no npm step.
+frontend/node_modules/
+frontend/.vite/
 
 # Editor and OS
 .idea/
@@ -56,3 +64,35 @@ graphify-out/
 # overrides that, since git never descends into an excluded parent.
 .qlty/
 .ruff_cache/
+
+.playwright/
+.playwright-cli/
+
+# Impeccable scratch: decision comps, generation logs, and the throwaway
+# generation script. PRODUCT.md and DESIGN.md are tracked; these are not.
+.impeccable/mocks/
+.impeccable/*.log
+.impeccable/gen-comps.sh
+.impeccable/decision-payload.json
+.impeccable/comp-round-payload.json
+
+# The design journal, private like PROGRESS.md and IDEAS.md.
+DESIGN_PROGRESS.md
+
+# Review screenshots and playwright-cli accessibility snapshots, written to the
+# repo root by browsing sessions. Scratch: the site loads none of them.
+/*.png
+/*.yml
+!/render.yaml
+
+# Design inputs, not shipped assets. references/ holds third-party poster art
+# used only to pick a direction, and this repo is public; assets/mumbai.png is
+# referenced by nothing. The direction contract cites references/creation.jpg
+# in a comment, which needs no file.
+references/
+assets/
+
+# Impeccable run scratch: critique write-ups and the question-server logs.
+# .impeccable/config.json is tracked; these are per-run output.
+.impeccable/critique/
+.impeccable/questions/

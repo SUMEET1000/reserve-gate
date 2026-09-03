@@ -1,0 +1,107 @@
+{
+  "_comment": "Citations for /rules. The live numbers come from policy.yaml through /api/rules, so this file never repeats a limit - only what each rule means and who says so. It duplicates the README's rule table; update both together.",
+  "rules": [
+    {
+      "id": "R0",
+      "title": "Currency and unit",
+      "semantics": "The call's currency must equal the block's own, upper-cased on both sides, and the amount must be a whole number of sub-units inside 100 .. 10^9. A boolean is not an integer here, because a bool is an int in Python and would otherwise pass as one paise.",
+      "source": "Razorpay API: amount is the smallest currency sub-unit and currency is a free ISO code",
+      "why": "Without it {\"amount\": 1000000, \"currency\": \"USD\"} passes a 10,000-rupee block as ten thousand US dollars.",
+      "plain": "The price has to be a whole number of paise, between ₹1 and ₹10,00,000, in the same currency as your budget. Anything else is refused outright rather than guessed at."
+    },
+    {
+      "id": "R1",
+      "title": "Block cap",
+      "semantics": "Committed and outstanding spending together never exceed the reserved block. The SQLite CHECK (spent + held <= reserved) is a second, database-level backstop under the rule.",
+      "source": "NPCI UPI Reserve Pay: an issuer caps a block at 10,000 rupees",
+      "plain": "Everything already spent, plus everything currently being spent, can never add up to more than your total budget. The database refuses to store an overspend even if the code were wrong."
+    },
+    {
+      "id": "R2",
+      "title": "Block expiry",
+      "semantics": "The block is valid until expires_at, up to 90 days. The expiry instant itself refuses, and unused balance is released.",
+      "source": "NPCI UPI Reserve Pay: a block runs up to 90 days",
+      "plain": "You give the budget an end date. From that instant on it buys nothing, and whatever is unspent is yours again."
+    },
+    {
+      "id": "R3",
+      "title": "Multiple debits",
+      "semantics": "One block pays for many purchases until it is exhausted, revoked or expired. A capture commits the reservation its order already took; it never debits a second time.",
+      "source": "NPCI \"Single Block Multiple Debits\"",
+      "plain": "One budget pays for as many purchases as fit inside it. It is not a one-shot voucher. Charging a card for an order already paid does not take the money twice."
+    },
+    {
+      "id": "R4",
+      "title": "Instant revocation",
+      "semantics": "A revoked block refuses every later money call immediately, including one already mid-session. The block is re-read after the decision and before anything is forwarded, so a revocation landing in that gap still stops the call.",
+      "source": "Razorpay agentic-payments blog: users can \"revoke consent instantly\"",
+      "plain": "You can cancel at any moment, including in the middle of the AI's shopping. The next request is refused straight away — even one that was a split second from being sent."
+    },
+    {
+      "id": "R5",
+      "title": "Per-call cap",
+      "semantics": "A single call may not exceed max_txn, whatever the block still holds.",
+      "source": "Razorpay agentic-payments blog: users authorise \"by setting spending limits for a merchant\"",
+      "plain": "No single purchase may be larger than the limit you set, however much budget is left."
+    },
+    {
+      "id": "R6",
+      "title": "Velocity window",
+      "semantics": "At most N money calls in a rolling window. A refused call counts; a replay does not. Counting only the calls that got through would leave a loop the gate is already refusing throttled by nothing.",
+      "source": "OWASP GenAI LLM06:2026 Unbounded Consumption (Denial of Wallet)",
+      "plain": "Only so many attempts are allowed in a short window, and refused attempts count too. Otherwise an AI stuck in a loop could hammer this forever for free."
+    },
+    {
+      "id": "R7",
+      "title": "Idempotency",
+      "semantics": "No money call is unkeyed. A client key is remembered for the life of the block; a key the gate derives from the call lives five minutes, long enough to catch a retry after a timeout and short enough that buying the same thing an hour later is a second sale.",
+      "source": "Razorpay webhook docs: duplicate delivery is expected behaviour",
+      "plain": "If the same request arrives twice, you are charged once. A dropped connection makes an AI resend, and resending must not become a second purchase — but genuinely buying the same thing again an hour later still works."
+    },
+    {
+      "id": "approval",
+      "title": "Human approval",
+      "semantics": "Above approval_over a call becomes HOLD and waits for a person. The amount is held against the block while it waits, so an approval cannot be granted against a balance something else spent meanwhile.",
+      "source": "Track 01 judging bar: \"every money action explainable, bounded and gated\"",
+      "plain": "Above the amount you choose, nothing goes through until you say yes. The money is set aside while it waits, so it cannot be spent on something else in the meantime."
+    }
+  ],
+  "guards": [
+    {
+      "id": "G4",
+      "title": "Fail closed",
+      "semantics": "Any exception, timeout or unparseable argument anywhere in the policy path returns BLOCK. There is no path where an error yields ALLOW.",
+      "plain": "If anything at all goes wrong while deciding — a crash, a timeout, a reply that makes no sense — the answer is no. There is no failure that ends in a purchase."
+    },
+    {
+      "id": "G5",
+      "title": "Deterministic decisions",
+      "semantics": "No model, no network call and no clock read inside decide(). Time is a parameter, so a test can sit exactly on a boundary.",
+      "plain": "No AI takes part in the decision, and the decision never reaches out to the network. The same request always gets the same answer, which is what makes it explainable."
+    },
+    {
+      "id": "G14",
+      "title": "Two-phase debit",
+      "semantics": "Reserve, forward, then commit on success or release on a known failure. A timeout is not a known failure: Razorpay may have acted, so the hold is kept until reconciliation rather than handed back.",
+      "plain": "The money is set aside first, the purchase is sent second, and only a confirmed result turns it into spending. If the reply is lost, the money stays set aside rather than being handed back and spent twice."
+    },
+    {
+      "id": "G15",
+      "title": "Default deny",
+      "semantics": "The four tools are declared by hand and that declaration is the allowlist. A Razorpay tool added after this was written arrives blocked, because it cannot appear here even in principle.",
+      "plain": "Only the payment actions written into this gate exist. Anything Razorpay adds later is refused until somebody adds it here on purpose."
+    },
+    {
+      "id": "G16",
+      "title": "Keys bind their parameters",
+      "semantics": "The same key with a different amount, tool or payee is a conflict, never the first result. Otherwise an attacker pre-registers a key against a one-rupee call and the victim's real call returns its success.",
+      "plain": "Reusing a receipt number for a different amount is a conflict, not a repeat. Otherwise somebody could claim a ₹1 receipt and have your ₹10,000 purchase answer 'already done'."
+    },
+    {
+      "id": "G11",
+      "title": "Hash-chained audit log",
+      "semantics": "Every record carries the previous record's digest, taken over canonical JSON rather than the file line. The chain catches an edit, a deletion or a reorder; the tail digest published in eval_report.md and committed to git is what catches a wholesale rewrite.",
+      "plain": "Every line of the log is fingerprinted against the one before it, and the final fingerprint is published separately. Editing the log breaks the chain; replacing it wholesale disagrees with the published value."
+    }
+  ]
+}

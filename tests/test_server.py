@@ -425,6 +425,25 @@ def test_two_different_tokens_are_accepted(monkeypatch):
     assert served == [True]
 
 
+def test_http_startup_loads_the_local_dotenv_before_checking_tokens(monkeypatch):
+    monkeypatch.delenv("RESERVE_GATE_TOKEN", raising=False)
+    monkeypatch.delenv("RESERVE_GATE_ADMIN_TOKEN", raising=False)
+    monkeypatch.setattr("sys.argv", ["reserve-gate", "--http"])
+    loaded = []
+
+    def local_env(*, override):
+        loaded.append(override)
+        monkeypatch.setenv("RESERVE_GATE_TOKEN", TOKEN)
+        monkeypatch.setenv("RESERVE_GATE_ADMIN_TOKEN", ADMIN)
+
+    monkeypatch.setattr(server, "load_dotenv", local_env)
+    import uvicorn
+    served = []
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: served.append(True))
+    server.main()
+    assert loaded == [False] and served == [True]
+
+
 def test_a_refused_capture_is_not_handed_back_as_a_success(monkeypatch, tmp_path):
     """G4. The ledger froze the block and refused the debit, so returning
     Razorpay's own `status: captured` payload would tell the caller the money

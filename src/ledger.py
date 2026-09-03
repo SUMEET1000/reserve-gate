@@ -86,6 +86,18 @@ CREATE TABLE IF NOT EXISTS webhook_events (
   effect     TEXT NOT NULL,
   reason     TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS live_checkout_slots (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  visitor_id  TEXT NOT NULL UNIQUE,
+  caller_id   TEXT NOT NULL,
+  day         TEXT NOT NULL,
+  attempted_at TEXT NOT NULL,
+  status      TEXT NOT NULL CHECK (status IN
+                ('pending', 'created', 'capturing', 'captured', 'failed')),
+  order_id    TEXT
+);
+CREATE INDEX IF NOT EXISTS live_checkout_slots_day ON live_checkout_slots(day);
 """
 
 MIGRATIONS = (

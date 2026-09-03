@@ -1,28 +1,53 @@
 # Render's free tier spins a service down after 15 idle minutes and the cold
-# start then takes about a minute. This pings /health often enough that a judge
-# opening the URL gets a warm instance.
+# start then costs 32.2 s (measured 30 Aug 2026, curl -w time_starttransfer
+# against a naturally spun-down instance; warm is 0.29-0.35 s). This keeps the
+# instance awake so a judge opening the URL does not pay that.
 #
-# The cadence is deliberate on both axes. Render grants 750 free instance hours
-# per workspace per month and suspends every free service in it once they are
-# gone; 24/7 costs 744 hours in a 31-day month, this window costs about 465.
-# The minutes are off the hour because GitHub names the top of the hour as a
-# high-load window for scheduled runs and may delay or drop a job there.
+# One long job that pings itself, not many scheduled pings. The previous file
+# asked the scheduler for 90 events a day and GitHub delivered 5 in total, then
+# nothing for 24 hours - against a 15-minute spin-down that is the same as no
+# workflow at all. A job that loops internally needs the scheduler to land once.
 #
-# This is a mitigation, not a guarantee: GitHub does not promise cron timing.
-# Warm the URL by hand five minutes before a demo or a panel call.
+# The loop ends at a fixed UTC clock time rather than after a fixed duration.
+# Render grants 750 free instance hours per workspace per month and suspends
+# every free service once they are gone; 24/7 costs 744 in a 31-day month. A
+# fixed end keeps coverage at ~15 h/day (~465 h/month) no matter when a job
+# starts, and overlapping jobs are harmless duplicate curls.
+#
+# Not a chain: GitHub deliberately refuses to let the default GITHUB_TOKEN start
+# another workflow run, so each-run-triggers-the-next needs a PAT with
+# actions: write stored on a public repo, in a project about credential safety.
+#
+# Still not a guarantee - GitHub does not promise cron timing. Warm the URL by
+# hand five minutes before a demo or a panel call, and check it with
+#   curl -w "%{time_starttransfer}\n" -o /dev/null -s https://reserve-gate.onrender.com/health
+# A green run here only proves one curl succeeded, not that the pings continued.
 name: keepalive
 
 on:
   schedule:
-    - cron: '3,13,23,33,43,53 4-18 * * *'   # UTC, about 09:30-00:30 IST
+    # Hourly attempts, off the hour: GitHub names the top of the hour as a
+    # high-load window. A dropped attempt costs nothing and one landing covers
+    # the rest of the window, so more attempts is strictly better.
+    - cron: '7 4-18 * * *'
   workflow_dispatch:
 
 jobs:
   ping:
     runs-on: ubuntu-latest
+    # Under the 6-hour hosted-runner cap, so the loop below ends on its own
+    # terms rather than being killed and showing a red X on the front page.
+    timeout-minutes: 320
     steps:
-      # continue-on-error so a Render outage does not put a red X on the front
-      # page of the repository, which is the first thing a judge sees.
-      - name: Ping /health
-        continue-on-error: true
-        run: curl -fsS --max-time 90 https://reserve-gate.onrender.com/health
+      - name: Ping /health every 5 minutes until 19:00 UTC
+        run: |
+          end=$(date -u -d 'today 19:00' +%s)
+          hard=$(( $(date -u +%s) + 5 * 3600 ))
+          [ "$hard" -lt "$end" ] && end=$hard
+          while [ "$(date -u +%s)" -lt "$end" ]; do
+            # || true so one Render blip does not end the day's coverage.
+            curl -fsS --max-time 90 -o /dev/null \
+              -w "%{http_code} %{time_starttransfer}s\n" \
+              https://reserve-gate.onrender.com/health || true
+            sleep 300
+          done

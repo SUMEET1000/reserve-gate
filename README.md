@@ -1,13 +1,99 @@
 # reserve-gate
 
-`reserve-gate` lets an AI buyer use Razorpay without receiving an unlimited
-payment surface. It places a deterministic spending block between the buyer and
-Razorpay, explains every refusal, and records every outcome.
+**An AI agent's spending limit should not be a sentence in a prompt. It should be
+a balance that runs out.**
 
-The model is never trusted to police itself. It proposes calls; this service
-decides whether money may move.
+## Start here
 
-## Three-command reproduction
+Shops are beginning to let AI agents buy things on their own. To do that, the
+shop hands the agent a payment key. That key has no limit on it. The agent can
+spend everything, any number of times, forever.
+
+Today the only thing stopping it is an instruction written in English, somewhere
+in the agent's prompt: *"do not spend more than ten thousand rupees."* That is
+not a control. It is a request. A model can misread it, a bad product name can
+talk it out of it, and a bug can loop it a thousand times.
+
+`reserve-gate` sits between the agent and Razorpay and turns that request into a
+balance. Money is set aside once. Every purchase is checked against what is left.
+When it runs out, it runs out — and the agent is told exactly which rule stopped
+it and how much remains.
+
+**The model still decides what to buy. It never decides what it is allowed to
+spend.**
+
+## Does it actually stop anything?
+
+This is the whole project in one table. The gate holds 16 separate guards. We
+deleted all 16 and replayed the same 150 attack cases through it.
+
+| | Money calls that got through | Money moved |
+|---|---:|---:|
+| All 16 guards **deleted** | **37** | **₹68,502** |
+| Guards **on** | **0** | **₹0** |
+
+`[measured 1 Sept 2026: python harness/gate_off.py, exit 0]`
+
+Of the 150 cases, 130 try to move money and 80 of those should be refused. With
+every guard deleted, 37 got through. The other 43 were still caught by code the
+16 deletions do not cover — the run names them rather than claiming credit.
+
+The script exits non-zero if the "guards on" row is ever dirty, so it cannot
+report a win by being broken.
+
+## What it is, in one picture
+
+Think of a prepaid card you top up once and hand to someone else.
+
+- They can spend it many times. (Rule R3)
+- They cannot spend more than is on it. (R1)
+- It stops working on a date you choose. (R2)
+- You can cancel it right now, mid-purchase. (R4)
+- No single swipe can be larger than a limit you set. (R5)
+- It cannot be swiped 1,000 times in a minute. (R6)
+- A double-swipe of the same purchase is charged once. (R7)
+- Anything above your comfort line waits for your approval. (HOLD)
+
+Every one of those is a real rule in code, not a description. Each one is
+enforced by a plain function with no model inside it, so the same input always
+gives the same answer, and the answer can be explained.
+
+## Try it yourself, no signup
+
+Open <https://reserve-gate.onrender.com>. You get your own spending block. You
+can shop with it, try to overspend it, revoke it mid-session, paste an attack
+into a product name, delete one of the gate's own rules and watch the score
+change, and pay a real ₹100 Razorpay test-mode order with a test card.
+
+No key, no account, no real money. First load takes about 32 seconds while the
+free server wakes up.
+
+## What Razorpay already ships, and where the gap is
+
+Razorpay shipped Agent Studio on 12 March 2026. Its published principles are
+bounded, gated, audited and revocable: *"Every agent operates within boundaries
+the merchant defines"*, *"No agent takes an irreversible action without explicit
+merchant approval"*, *"every agent action passes through Razorpay's
+platform-level validation layer before execution"*, *"Every single action is
+logged with a full audit trail"*, and *"The merchant can turn off any agent at
+any time. One tap. Immediate."*
+[vendor-doc, fetched 1 Sept 2026: razorpay.com/blog/razorpay-agent-studio-principles-guardrails-and-merchant-control]
+
+Those controls govern the agents **Razorpay runs**. They are platform-side, and
+they bound a first-party agent inside Razorpay's own product.
+
+Nothing bounds the agents **anyone else runs**. The hosted MCP server at
+`mcp.razorpay.com` exposes `create_order`, `capture_payment`, `update_payment`,
+`create_payment_link`, `create_payment_link_upi`, `send_payment_link` and
+`create_qr_code` to any client holding a merchant key. That surface carries no
+spending cap, no expiry, no revocation and no policy audit trail. A merchant who
+hands an outside AI buyer a key hands it the whole account.
+
+`reserve-gate` is that missing piece: the same four properties, applied to the
+third-party path, by a service the merchant runs. Agent Studio secures Razorpay's
+agents; this secures everyone else's.
+
+## Run it on your own machine — three commands
 
 ```console
 pip install -r requirements.txt
@@ -40,6 +126,79 @@ python harness/run_eval.py
 python harness/mutate.py
 ```
 
+## The demo site
+
+<https://reserve-gate.onrender.com> opens with a plain-language landing page.
+`/demo` then walks one purchase through limits, an AI shopping trip, the gate's
+decisions, and payment proof. The attack, mutation, trace, rules, and evidence
+pages remain under **Technical proof**. Sandbox decisions are genuine
+`decide()` calls against real SQLite on the same `BEGIN IMMEDIATE` path and land
+in the same hash-chained log; they never call Razorpay.
+
+The final checkpoint can create one fixed ₹100 Razorpay test-mode order and
+capture its returned payment through the same authorization, reservation,
+upstream, and settlement functions used by MCP. It accepts no amount, tool,
+receipt, target order, or upstream URL from the browser. A separate 24-hour
+cookie permits one order attempt per browser, and an atomic SQLite reservation
+caps the whole server at 20 attempts per UTC day. The route refuses production
+keys. Without test credentials or capacity it keeps the sandbox usable and
+links to the committed recorded payment trace.
+
+Each visitor gets their own block, keyed by an `HttpOnly; SameSite=Lax` cookie.
+The `caller_id` is derived from that cookie server-side and never read from a
+request field, so one visitor cannot name another's block, order or idempotency
+key. The pages and their JSON API are the only unauthenticated surface;
+`/mcp`, `/approve`, `/revoke`, `/unfreeze` and `/block` are unchanged and still
+require their bearer tokens. The admin prefixes are matched *before* the public
+list, so a page path can never widen into an admin route.
+
+The pages are a React application built with Vite and Tailwind CSS; the source
+is in `frontend/` and the build writes exactly two files, `web/app.js` and
+`web/app.css`, over the two filenames `src/dashboard.py` already routes. Both are
+**committed**, so Render's build command stays `pip install` and the
+three-command repro below needs no npm. Rebuild after changing anything under
+`frontend/`:
+
+```
+cd frontend && npm install && npm run build
+```
+
+Restart the server afterwards — `dashboard.static()` is `lru_cache`d, so a
+running process keeps serving the previous bytes.
+
+The rule-deletion page runs `harness/mutate.py` for real, **in a subprocess**.
+The mutation is selected by index into that module's fixed list — a
+caller-supplied string there would be remote code execution — and each run
+writes to a throwaway audit file, so the committed chain is untouched. The child
+process matters as much as the index: scoring a mutation rebinds `ledger.decide`
+for a whole interpreter, so doing it in the server would delete a policy guard
+from every concurrent money decision for as long as the run takes, on a route
+that needs no token. The swap now lives and dies in a process that serves
+nothing.
+
+**First request may take about 32 seconds while the free instance wakes.**
+Measured 30 August 2026 with `curl -w "%{time_starttransfer}"` against a
+naturally spun-down instance; warm is 0.29–0.35 s. Reload once.
+
+Response budgets are a gate, not a claim. `python harness/perf_check.py` starts
+a local server, measures p95 over 12 samples per endpoint, prints the table and
+exits non-zero on a miss, so the reported line and the exit status come from one
+expression and cannot disagree. Run 31 August 2026 on one Windows laptop:
+**20 of 20 within budget, exit 0**. The tightest rows are `POST /api/shop` at
+91.7 ms of a 100 ms budget and `POST /api/mutate` at 689.4 ms of 2000 ms; both
+move by a factor of two or more between runs depending on what else the machine
+is doing, which is why the check is a threshold and not a published latency.
+
+API rows have the round-trip floor subtracted — `/health` p95, measured in the
+same run with the same client, 16.2 ms here. `/health` runs none of this code,
+so whatever it costs is the harness measuring itself, and the budgets are
+written about the server's own work. The six page rows keep the floor, because a
+browser pays it too. The floor has its own ceiling of 60 ms, so a globally slow
+run fails outright instead of quietly shrinking every excess.
+
+`web/rules.json` carries the same eight rules as the table below, for the rules
+page to render. They are two copies of one fact: change either and change both.
+
 ## Architecture
 
 ```text
@@ -62,7 +221,12 @@ Only four upstream tools exist at the gate: `create_order`, `capture_payment`,
 allowlist; a new Razorpay money tool is unavailable until explicitly reviewed.
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the trust boundaries and money flow.
 
-## The seven policy rules
+## The eight policy rules
+
+These are the prepaid-card properties above, written out exactly. Each is a
+separate check. A call must pass all of them; failing any one is a refusal that
+names the rule. The demo site counts nine, because it lists the approval gate
+below the table as a check of its own.
 
 | Rule | Control |
 |---|---|
@@ -265,7 +429,34 @@ token and does not implement an OAuth authorization server.
 - A caller that omits `idempotency_key` inherits a five-minute collapse between
   two identical-amount purchases. See the R7 boundary above.
 - Manual unfreeze does not reconcile or rebuild payment history.
+- The demo site's blocks are per-cookie and live on that same ephemeral disk, so
+  a visitor's block is erased when the instance sleeps — including mid-session if
+  they leave the tab for fifteen minutes. Clearing the cookie also abandons the
+  old block rather than deleting it.
+- The demo site's model box is rate-limited by a per-day counter in SQLite, which
+  the same spin-down resets. With no `GEMINI_API_KEY` set, or once the budget is
+  spent, it serves a recorded run committed at `web/recorded_llm_run.json` and
+  says on the page that it is doing so.
+- The public test-checkout cap is also stored on Render's ephemeral disk. A
+  sleep or redeploy resets its daily counter; this is an abuse brake for a demo,
+  not durable billing infrastructure.
+- The keepalive workflow depends on GitHub's scheduler firing at least once a
+  day. Measured 30 August 2026, GitHub delivered about 5% of the runs the old
+  cron asked for. One landing now covers an afternoon, but nothing here can make
+  the scheduler land. Warm the URL by hand before anything that matters.
 - Dependency and policy tests are deterministic; the final dashboard webhook
   replay is the separate live integration proof.
+- **Requests are not cryptographically signed.** A caller is identified by its
+  bearer token, and each block is bound server-side to the caller derived from
+  it. Signed mandates would additionally prove *who originated* a request. Six
+  days went into the permission question — how much, for how long, revocable when
+  — and a signature answers origin, not permission. The two are complementary and
+  only one was built.
+- **A block cannot be split into delegated sub-budgets.** One agent holds one
+  block. An agent cannot hand a smaller, weaker allowance to a sub-agent without
+  contacting this server. Doing that properly needs a capability-token layer with
+  offline attenuation and a delegation depth limit; a half-built version of that
+  is worse than not having it, because it would look like a boundary while
+  leaking one.
 
 Copy `.env.example` to `.env` only when using Razorpay test mode. Never commit it.

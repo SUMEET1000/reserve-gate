@@ -142,5 +142,43 @@ def main() -> int:
     return 0 if not failed else 1
 
 
+def score_one(argv: list[str]) -> int:
+    """Score a single mutation and print the result as JSON on stdout.
+
+        python harness/mutate.py --index 3     # one rule deleted
+        python harness/mutate.py --baseline    # nothing deleted, the control
+
+    This exists so the demo site can run a mutation without loading it into the
+    process that is serving money. `score_with` rebinds `ledger.decide` for the
+    whole interpreter, so a mutation scored in the web server would delete a
+    guard from every concurrent decision for the ~0.8 s it runs. Here the swap
+    lives and dies inside a process that has no server, no upstream credential
+    and no ledger of its own.
+
+    The index is validated again on this side. The caller already checks it, but
+    a guard that only exists at the caller is a guard that moves when the caller
+    does.
+    """
+    if argv[:1] == ["--baseline"]:
+        label, source = "baseline - nothing mutated", POLICY.read_text(encoding="utf-8")
+    elif argv[:1] == ["--index"] and len(argv) == 2 and argv[1].isdigit() \
+            and int(argv[1]) < len(MUTATIONS):
+        label, anchor = MUTATIONS[int(argv[1])]
+        source = POLICY.read_text(encoding="utf-8")
+        if source.count(anchor) != 1:
+            print(json.dumps({"error": f"the anchor for {label} no longer matches"
+                              " exactly once in policy.py"}))
+            return 2
+        source = source.replace(anchor, "if False:")
+    else:
+        print(json.dumps({"error": "no such mutation"}))
+        return 2
+
+    text = (HERE / "cases.jsonl").read_text(encoding="utf-8")
+    cases = [json.loads(ln) for ln in text.splitlines() if ln.strip()]
+    print(json.dumps({"label": label, "cases": len(cases), **score_with(source, cases)}))
+    return 0
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(score_one(sys.argv[1:]) if len(sys.argv) > 1 else main())

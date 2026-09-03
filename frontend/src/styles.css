@@ -1,0 +1,2909 @@
+@import "tailwindcss";
+
+/* The Orbit Sheet. A technical drawing on cream paper: the gate is the object
+   under measurement and every rule is an orbit around it. Palette measured out
+   of references/creation.jpg rather than picked - #F0F0F0 is 64% of that image
+   and #900020 is the only chromatic mark in it. */
+
+/* Self-hosted, latin subset only. Google's own CDN is one more host to reach on
+   a cold start the free tier already pays 32 s for, and the CSP stays closed. */
+/* One display serif does both jobs. Cormorant 500 was named by Sumeet on 2 Sept
+   2026 and applies site-wide under his standing font rule; Yeseva One, Instrument
+   Serif and Bodoni Moda were each the display face before it and none is in the
+   build any more. One weight ships, so every display rule is set at 500 and
+   synthesis stays off - a faked bold on a high-contrast serif thickens the
+   hairlines first and the stems last, which is what this kind of face is for.
+   No display size moved with the face, and .hero-title carries the measurement
+   that decided it - Cormorant draws the taller cap of the two, so a scale-up
+   would only have made the hero taller. */
+@font-face {
+  font-family: "Cormorant";
+  src: url("/fonts/Cormorant-normal-500.woff2") format("woff2");
+  font-weight: 500; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Mona Sans";
+  src: url("/fonts/MonaSans-normal-400.woff2") format("woff2");
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Mona Sans";
+  src: url("/fonts/MonaSans-normal-500.woff2") format("woff2");
+  font-weight: 500; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Mona Sans";
+  src: url("/fonts/MonaSans-normal-700.woff2") format("woff2");
+  font-weight: 700; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Archivo";
+  src: url("/fonts/Archivo-normal-400.woff2") format("woff2");
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Archivo";
+  src: url("/fonts/Archivo-normal-500.woff2") format("woff2");
+  font-weight: 500; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Archivo";
+  src: url("/fonts/Archivo-normal-700.woff2") format("woff2");
+  font-weight: 700; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Azeret Mono";
+  src: url("/fonts/AzeretMono-normal-400.woff2") format("woff2");
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Azeret Mono";
+  src: url("/fonts/AzeretMono-normal-500.woff2") format("woff2");
+  font-weight: 500; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Azeret Mono";
+  src: url("/fonts/AzeretMono-normal-700.woff2") format("woff2");
+  font-weight: 700; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Barlow Condensed";
+  src: url("/fonts/BarlowCondensed-normal-700.woff2") format("woff2");
+  font-weight: 700; font-style: normal; font-display: swap;
+}
+
+@theme {
+  --color-paper: #f0f0ee;
+  --color-paper-2: #f7f6f3;
+  --color-ink: #111111;
+  /* Named --color-blue because six pages and a hundred utility classes already
+     say text-blue; the value is the sheet's crimson and nothing here is blue. */
+  --color-blue: #900020;
+  --color-blue-ink: #6b0018;
+  --color-orange: #900020;
+  --color-allow: #1f5c3d;
+  --color-block: #900020;
+  --color-hold: #78591f;
+  --color-muted: #6d6a64;
+  --color-rule: rgba(17, 17, 17, 0.18);
+
+  --font-sans: "Archivo", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Azeret Mono", "Cascadia Mono", ui-monospace, monospace;
+  --font-display: "Cormorant", "Bodoni MT", "Didot", Georgia, serif;
+  /* Kept as a separate token because the drawing keys and the crimson figures
+     read as a second voice even on one face; it is the same family today. */
+  --font-display-2: "Cormorant", "Bodoni MT", "Didot", Georgia, serif;
+  --font-key: "Barlow Condensed", "Arial Narrow", sans-serif;
+
+  /* A drawing has no drop shadows. What lifts a panel here is a second hairline
+     offset from the first, which is how a drafting sheet shows a raised plate. */
+  --shadow-lift: 0 0 0 1px rgba(17, 17, 17, 0.1), 3px 3px 0 0 rgba(17, 17, 17, 0.06);
+}
+
+:root {
+  --crystal-edge: rgba(144, 0, 32, 0.28);
+  --crystal-white: rgba(247, 246, 243, 0.94);
+  --ease-refract: cubic-bezier(0.16, 1, 0.3, 1);
+  /* The roll's deceleration. The reference's own letter curve reached 90% of
+     its travel in the first third of its run and crawled the rest; this is
+     that shape. */
+  --ease-roll: cubic-bezier(0.22, 1, 0.28, 1);
+  --motion-control: 200ms;
+  --motion-surface: 420ms;
+  --motion-settle: 850ms;
+
+  --ghost: rgba(17, 17, 17, 0.055);   /* the under-layer of unreadable body text */
+  --hair: rgba(17, 17, 17, 0.22);     /* every sheet rule on the page */
+  --hair-red: rgba(144, 0, 32, 0.42); /* orbit rings and dimension chains only */
+  --sheet-inset: clamp(0.9rem, 2.2vw, 2.4rem);
+  /* The margin track that holds A, B, C and D. Every keyed row on the page reads
+     it, so the letters cannot drift out of one vertical line; it has to stay
+     wide enough for the largest step of `.beat-mark`'s clamp. */
+  --key-col: 4.6rem;
+  /* The header is `position: sticky`, so it covers this much of the viewport
+     at every scroll position. A band that wants to be the only thing on
+     screen has to subtract it; `100vh` alone is always 84px too tall. */
+  --header-h: 76px;
+}
+
+@media (min-width: 640px) {
+  :root { --header-h: 84px; }
+}
+
+@media (min-width: 900px) {
+  :root { --key-col: 8.6rem; }
+}
+
+/* Proximity snapping, so a scroll that ends near the verdicts band lands on it
+   with the band filling the screen. Mandatory would trap every scroll on the
+   page; proximity only acts when the scroll already stopped nearby, and does
+   nothing at all for a reader who keeps going. */
+@media (min-width: 900px) and (prefers-reduced-motion: no-preference) {
+  html { scroll-snap-type: y proximity; }
+}
+
+@layer base {
+  html {
+    background: var(--color-paper);
+    scroll-behavior: smooth;
+  }
+
+  body {
+    min-height: 100vh;
+    overflow-x: hidden;
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.6;
+    /* The display serif ships one weight. Without this a stray inherited
+       600 or 700 is drawn by smearing the outline, which thickens the
+       hairlines before the stems and flattens the contrast the face is
+       here for. Off everywhere; nothing on the sheet wants a faked bold. */
+    font-synthesis-weight: none;
+  }
+
+  /* Paper tooth. Two offset dot grids at fractional opacity read as fibre at
+     100% and disappear on a phone, where the device pixel ratio would otherwise
+     turn them into a moire. An image would be a request; this is 200 bytes. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    /* Measured 1 Sept 2026: at 0.055/0.035 on a 3px grid this pulled the paper
+       from 240,240,238 down to 218 - a ninth of the sheet's brightness spent on
+       texture nobody consciously sees. Sparser grid, lighter dots. */
+    background-image:
+      radial-gradient(rgba(17, 17, 17, 0.025) 0.5px, transparent 0.5px),
+      radial-gradient(rgba(17, 17, 17, 0.015) 0.5px, transparent 0.5px);
+    background-size: 6px 6px, 13px 13px;
+    background-position: 0 0, 3px 5px;
+  }
+
+  ::selection {
+    background: var(--color-blue);
+    color: var(--color-paper);
+  }
+
+  /* The parts nobody draws still carry the design: a default blue scrollbar on
+     a crimson-and-cream sheet is the one pixel that says nobody looked. */
+  * {
+    scrollbar-color: var(--color-ink) var(--color-paper);
+    scrollbar-width: thin;
+  }
+
+  a {
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.22em;
+    text-decoration-color: var(--hair-red);
+  }
+
+  input,
+  textarea,
+  select,
+  button {
+    caret-color: var(--color-blue);
+  }
+
+  /* Every measurement on a drawing lines up in its column. */
+  code, pre, [class*="font-mono"], .font-mono, table {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* A drawing marks a point with a cross, not a rounded halo. */
+  :where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--color-ink);
+    outline-offset: 3px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  .rule-line {
+    border-block: 1px solid var(--color-rule);
+  }
+
+  .settle {
+    animation: settle var(--motion-settle) var(--ease-refract) backwards;
+    animation-delay: var(--settle-delay, 0s);
+  }
+
+  @keyframes settle {
+    from { opacity: 0; transform: translateY(1rem); filter: blur(5px); }
+    to { opacity: 1; transform: none; filter: none; }
+  }
+
+  @supports (animation-timeline: view()) {
+    .draw-rule {
+      animation: draw-rule linear both;
+      animation-timeline: view();
+      animation-range: entry 5% cover 32%;
+    }
+
+    @keyframes draw-rule {
+      from { transform: scaleX(0); }
+      to { transform: scaleX(1); }
+    }
+  }
+}
+
+#root {
+  isolation: isolate;
+}
+
+/* A drawing sheet has a title block, not a floating toolbar: one hairline under
+   the header and the paper carries straight through it. The blurred white bar
+   this replaced was the single loudest piece of borrowed SaaS chrome here. */
+.site-header {
+  border-color: var(--hair) !important;
+  /* Flat and opaque. A translucent bar with a backdrop-filter measured 254,254,254
+     here on 1 Sept 2026 against a 240,240,238 page - the blur builds its own
+     backdrop root and the paper never reaches it. On a drawing the title block
+     is printed on the sheet, so opaque is also the right answer. */
+  background: var(--color-paper) !important;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.brand-mark {
+  filter: none;
+}
+
+/* Scroll reveal. Anything carrying data-reveal starts a little low and clear
+   and settles once, when it first comes into view. The transform is on the
+   section itself rather than on a wrapper so nothing new lands in the DOM, and
+   `will-change` is deliberately absent: seven pages of promoted layers cost
+   more than the animation is worth. */
+.js-reveal .reveal {
+  opacity: 0;
+  transform: translate3d(0, 18px, 0);
+  transition:
+    opacity var(--motion-surface) var(--ease-refract),
+    transform var(--motion-surface) var(--ease-refract);
+}
+
+.reveal-quick {
+  transition-duration: var(--motion-control);
+}
+
+.js-reveal .reveal.is-in {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .js-reveal .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+button,
+a[class*="border"] {
+  border-radius: 2px !important;
+  transition-duration: var(--motion-control) !important;
+  transition-timing-function: var(--ease-refract) !important;
+}
+
+/* A field is a box ruled on the sheet, so it takes the paper and the ink rather
+   than the browser's own white. It carried `background: white`, an inset white
+   highlight and a cobalt hover left over from the discarded world - three
+   literals with no token behind them, which is why the skin swap could not
+   reach them and every input on the site went unreadable rather than failing
+   loudly. Measured 2 Sept 2026: text 1.05:1 against its own field. */
+input,
+textarea,
+select {
+  border: 1px solid var(--color-rule) !important;
+  border-radius: 0 !important;
+  background: var(--color-paper-2) !important;
+  color: var(--color-ink) !important;
+  transition: border-color var(--motion-control) ease,
+              box-shadow var(--motion-control) ease;
+}
+
+input::placeholder,
+textarea::placeholder { color: var(--color-muted); }
+
+input:hover,
+textarea:hover,
+select:hover,
+details:hover,
+details[open] {
+  border-color: var(--color-blue) !important;
+}
+
+details[open] > div {
+  animation: reveal-detail var(--motion-surface) var(--ease-refract) both;
+}
+
+@keyframes reveal-detail {
+  from { opacity: 0; transform: translateY(-5px); clip-path: inset(0 0 100%); }
+  to { opacity: 1; transform: none; clip-path: inset(0); }
+}
+
+table,
+code,
+.font-mono {
+  font-variant-numeric: tabular-nums;
+}
+
+.ots-proof-slot {
+  margin-inline: auto;
+  max-width: 1480px;
+  padding: 2.6rem calc(var(--sheet-inset) + 1rem) 3rem;
+  border-top: 1px solid var(--hair);
+}
+
+@media (min-width: 900px) {
+  .ots-proof-slot { padding-inline: calc(var(--sheet-inset) + 3.4rem); }
+}
+
+.ots-proof-slot h2 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(1.4rem, 2.5vw, 1.9rem);
+  line-height: 1.04;
+}
+
+.ots-proof-slot p { margin-top: 0.7rem; color: var(--color-muted); }
+
+/* The value is specified and not yet stamped, so the slot is drawn as a part
+   that is dimensioned and not yet present. It stays empty until the merge. */
+.ots-proof-slot::after {
+  display: block;
+  min-height: 4.5rem;
+  margin-top: 1.4rem;
+  border: 1px dashed var(--hair);
+  content: "";
+}
+
+@supports (animation-timeline: view()) {
+  body[data-page="landing"] #how,
+  body[data-page="landing"] #proof,
+  body[data-page="demo"] #technical {
+    animation: section-arrive linear both;
+    animation-timeline: view();
+    animation-range: entry 0 cover 23%;
+  }
+
+  @keyframes section-arrive {
+    from { opacity: 0.72; transform: translateY(18px); clip-path: inset(0 0 12%); }
+    to { opacity: 1; transform: none; clip-path: inset(0); }
+  }
+
+  /* A repeating grid arrives a row at a time. Each child carries its own
+     view() timeline, so the offset comes from where the child actually is
+     rather than from a written delay - which is why a grid that reflows from
+     three columns to one still staggers correctly. The range ends early so a
+     card is fully readable well before it reaches the middle of the screen. */
+  .stagger > * {
+    animation: stagger-in linear both;
+    animation-timeline: view();
+    animation-range: entry 0 entry 65%;
+  }
+
+  @keyframes stagger-in {
+    from { opacity: 0.35; transform: translateY(14px); }
+    to { opacity: 1; transform: none; }
+  }
+
+  /* The audit spine on /trace draws itself downward as the list is read. It is
+     the ::before of the <ol>, so there is no extra element, and it is scaled
+     from the top rather than animated in height to keep it off the layout. */
+  .spine::before {
+    transform-origin: top;
+    animation: spine-draw linear both;
+    animation-timeline: view();
+    animation-range: entry 30% cover 55%;
+  }
+
+  @keyframes spine-draw {
+    from { transform: scaleY(0); }
+    to { transform: scaleY(1); }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stagger > *,
+  .spine::before {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@view-transition {
+  navigation: auto;
+}
+
+::view-transition-old(root) {
+  animation: refract-out 180ms ease both;
+}
+
+::view-transition-new(root) {
+  animation: refract-in 420ms var(--ease-refract) both;
+}
+
+@keyframes refract-out {
+  to { opacity: 0; filter: blur(4px); transform: translateY(-4px); }
+}
+
+@keyframes refract-in {
+  from { opacity: 0; filter: blur(5px); transform: translateY(7px); }
+}
+
+@media (max-width: 1023px) {
+  .landing-hero-copy {
+    margin-inline: -1.5rem;
+    padding: 2.25rem 1.5rem 0;
+    background: var(--color-paper);
+    box-shadow: 0 -24px 34px rgba(251,252,255,.96);
+  }
+
+  .route-track {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .route-track::before {
+    top: 2%;
+    bottom: 2%;
+    left: 2.1rem;
+    width: 1px;
+    height: auto;
+  }
+
+  .route-request,
+  .route-node,
+  .route-decision {
+    min-height: 9rem;
+    background: transparent;
+  }
+
+  .route-request {
+    margin-left: 4.5rem;
+    padding-right: 0;
+  }
+
+  .route-node,
+  .route-decision {
+    display: grid;
+    grid-template-columns: 4.25rem minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    column-gap: 1.5rem;
+    align-items: center;
+    padding-block: 1.4rem;
+    text-align: left;
+  }
+
+  .route-node > span:first-child,
+  .route-decision > span:first-child {
+    grid-column: 2;
+  }
+
+  .route-facet,
+  .decision-crystal {
+    grid-row: 1 / 3;
+    width: 4.25rem;
+    height: 4.25rem;
+  }
+
+  .route-node strong,
+  .route-decision > span:last-child {
+    grid-column: 2;
+  }
+}
+
+@media (max-width: 639px) {
+
+  body[data-page="landing"] #proof > div > div {
+    border-right: 0 !important;
+    border-bottom: 1px solid var(--color-rule) !important;
+  }
+
+  body[data-page="landing"] #proof > div > div:last-child {
+    border-bottom: 0 !important;
+  }
+
+  .landing-close-visual {
+    min-height: 25rem;
+  }
+
+}
+
+@media (max-width: 639px) {
+  .landing-close-visual { min-height: 43rem; }
+
+  .control-poster { inset-block: 1rem 4.5rem; }
+  .control-poster__glass { inset: 7% 7%; padding: 1.5rem; }
+  .control-poster__title { font-size: clamp(2.35rem, 12vw, 3rem); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 0.01ms;
+  }
+}
+
+/* ---------------------------------------------------------------- the sheet
+
+   The landing page, rebuilt 1 Sept 2026. The route strip, the three verdict
+   solids and the closing poster were cut on Sumeet's instruction; what replaced
+   them is one continuous drawing sheet with numbered plates on it. */
+
+/* Nav items and buttons are labels on a drawing, not body text, so they take
+   the sheet's label voice - the same mono uppercase as the corner notes and the
+   measurement callouts. They were set in the body sans at one size with nothing
+   else said about them, which is what made them read as plain. The mono is not a
+   costume here: it is what every other label on this sheet is already set in,
+   and the keys moved off it to Archivo in the same pass. */
+.nav-link {
+  color: var(--color-ink);
+  text-decoration: none;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.nav-link:hover { color: var(--color-blue); }
+
+.landing-hero { cursor: crosshair; }
+
+.hero-dimensions {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.hero-dimensions line {
+  fill: none;
+  stroke: var(--color-blue);
+  stroke-width: 0.8;
+  stroke-opacity: 0.58;
+  vector-effect: non-scaling-stroke;
+}
+
+.hero-dimensions path { fill: var(--color-blue); opacity: 0.58; }
+
+.hero-dimensions text {
+  fill: var(--color-blue);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  opacity: 0.8;
+}
+
+@media (max-width: 1023px) { .hero-dimensions { display: none; } }
+
+.hero-grid {
+  position: relative;
+  z-index: 10;
+  display: grid;
+  gap: 2rem;
+  margin-inline: auto;
+  max-width: 1480px;
+  align-items: center;
+  /* Symmetric block padding, or `align-items: center` centres the copy in a box
+     that is itself 8px off-centre in the hero - which is the whole visible
+     effect at 1920x1080. */
+  padding: 4.75rem calc(var(--sheet-inset) + 2.2rem);
+}
+
+@media (min-width: 1024px) {
+  .hero-grid {
+    grid-template-columns: 1.02fr 0.98fr;
+    /* Was 82vh, which plus the block padding and the sticky header put the hero
+       at 1126px in a 1080px viewport - the button fell below the fold and the
+       page opened mid-scroll. The same expression #outcomes uses, so the two
+       full-height bands cannot drift apart. Measured 2 Sept 2026. */
+    min-height: calc(100svh - var(--header-h));
+    padding-block: 3.4rem;
+    padding-inline: calc(var(--sheet-inset) + 3.4rem);
+  }
+}
+
+/* Every display-serif size came down by the same 0.83 on 2 Sept 2026, on
+   Sumeet's instruction that the hero's new weight had to be carried across the
+   whole site rather than left as one page's exception. One factor, applied to
+   every rule at once, is what keeps the step between a beat title and a plate
+   title exactly where it was measured. .beat-mark and .plate-mark are not in it:
+   they render in --font-key, not in the serif. */
+
+.hero-title {
+  font-family: var(--font-display);
+  /* One display weight ships, so size is the only control over how heavy the
+     headline reads. 6.4rem put ~14px stems on the sheet and Sumeet called it too
+     fat on 2 Sept 2026; 5.3rem is ~11.7px, a sixth thinner, and the two-line
+     headline fits the column beside the gate.
+
+     The size did NOT move when Cormorant replaced Mona Sans on 2 Sept, and that
+     is a measurement rather than an omission. At one font-size Cormorant 500
+     draws a 73px cap against Mona Sans 700's 68px and is 390.5px wide against
+     425.2px - taller caps in a narrower column, so raising the display scale
+     would have made the hero taller, which is the complaint that produced this
+     clamp in the first place. Its x-height is the smaller one (39 against 45);
+     that is the face's proportion, not a size error, and is why the lede beneath
+     is set in the body sans and not in the serif. Measured in-page with canvas
+     TextMetrics, 1440x900, 2 Sept 2026.
+
+     The slope moved, and only the slope. "You set the ceiling." is the longest
+     line the headline will ever set, and the copy column is not a constant
+     fraction of the viewport - it is widest per vw at 1440 and narrowest at
+     1024, so the binding width is 1024 and not the smallest screen. Measured
+     across eight widths on 2 Sept 2026, the largest size that still sets it on
+     one line was 88.2px at 1920, 86.3 at 1440, 81.4 at 1366, 75.6 at 1280 and
+     58.5 at 1024; 6.1vw cleared the first two and broke the next three to a
+     third line. 5.55vw clears all five with 1.7px to spare at 1024, and the
+     2.4rem floor clears 390 by 1.4px. Raise either number and 1024 wraps first,
+     not the phone. */
+  font-size: clamp(2.4rem, 5.55vw, 5.3rem);
+  font-weight: 500;
+  line-height: 0.96;
+  /* A little air between the letters is what lets the high stroke contrast
+     show rather than reading as one dark block. Asked for by Sumeet on 1 Sept
+     2026 and kept through the 2 Sept change of face. */
+  letter-spacing: 0.012em;
+  text-wrap: balance;
+}
+
+.hero-lede {
+  margin-top: 2rem;
+  max-width: 46ch;
+  font-size: 1.1rem;
+  line-height: 1.65;
+  color: var(--color-muted);
+}
+
+.hero-void { height: 300px; }
+@media (min-width: 640px) { .hero-void { height: 400px; } }
+@media (min-width: 1024px) { .hero-void { height: min(60vh, 540px); } }
+
+/* The four corner labels and the ghost layer are drawn on the sheet, not set in
+   its column. Both carried only offsets and never `position`, so they sat in the
+   hero's normal flow and pushed the grid 76.8px down - invisible, because the
+   canvas is positioned and painted over them, so the only symptom was a hero
+   that would not centre. Measured 1 Sept 2026: copy 267.3px from the top of the
+   hero against 198.6px from the bottom, at 1920x1080 and at 1440x900 alike. */
+.sheet-note {
+  position: absolute;
+  z-index: 10;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.sheet-note[data-at='tl'] { top: calc(var(--sheet-inset) + 1.4rem); left: calc(var(--sheet-inset) + 2.2rem); }
+.sheet-note[data-at='tr'] { top: calc(var(--sheet-inset) + 1.4rem); right: calc(var(--sheet-inset) + 2.2rem); }
+.sheet-note[data-at='bl'] { bottom: calc(var(--sheet-inset) + 1.4rem); left: calc(var(--sheet-inset) + 2.2rem); }
+.sheet-note[data-at='br'] { bottom: calc(var(--sheet-inset) + 1.4rem); right: calc(var(--sheet-inset) + 2.2rem); }
+
+@media (min-width: 1024px) {
+  .sheet-note[data-at='tl'],
+  .sheet-note[data-at='bl'] { left: calc(var(--sheet-inset) + 3.4rem); }
+  .sheet-note[data-at='tr'],
+  .sheet-note[data-at='br'] { right: calc(var(--sheet-inset) + 3.4rem); }
+}
+
+.ghost-text {
+  position: absolute;
+  z-index: 0;
+  max-width: 34ch;
+  font-size: 0.68rem;
+  line-height: 1.5;
+  color: var(--ghost);
+  pointer-events: none;
+  user-select: none;
+  top: calc(var(--sheet-inset) + 3.2rem);
+  right: calc(var(--sheet-inset) + 1.2rem);
+}
+
+/* --- the three beats. They were three small bordered cards in one row; at that
+   size the icon was the only thing anyone read. Each now owns a full band. */
+
+.beats {
+  border-top: 1px solid var(--hair);
+}
+
+.beat {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1.6rem 2.4rem;
+  align-items: start;
+  margin-inline: auto;
+  max-width: 1480px;
+  padding: 3.4rem calc(var(--sheet-inset) + 2.2rem);
+  border-bottom: 1px solid var(--hair);
+  position: relative;
+}
+
+@media (min-width: 900px) {
+  .beat {
+    grid-template-columns: 7rem 1fr 9rem;
+    gap: 3rem;
+    padding-block: 5.5rem;
+    padding-inline: calc(var(--sheet-inset) + 3.4rem);
+  }
+}
+
+/* The letter in the margin, the way a drawing keys a detail to its plate. */
+.beat-mark {
+  font-family: var(--font-display-2);
+  font-weight: 500;
+  font-size: clamp(3.2rem, 7vw, 5.6rem);
+  line-height: 0.8;
+  color: var(--color-blue);
+}
+
+.beat-body h2 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(1.65rem, 3.65vw, 2.8rem);
+  line-height: 1.02;
+  letter-spacing: 0.008em;
+}
+
+.beat-body p {
+  margin-top: 1.1rem;
+  max-width: 52ch;
+  font-size: 1.05rem;
+  line-height: 1.65;
+  color: var(--color-muted);
+}
+
+/* --- plates: the two lower sections share one head and one measure. */
+
+.plate {
+  margin-inline: auto;
+  max-width: 1480px;
+  padding: 4.5rem calc(var(--sheet-inset) + 2.2rem) 5rem;
+  border-bottom: 1px solid var(--hair);
+}
+@media (min-width: 900px) {
+  .plate { padding-inline: calc(var(--sheet-inset) + 3.4rem); padding-block: 6rem 6.5rem; }
+}
+
+.plate-head {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1.6rem;
+  align-items: baseline;
+  padding-bottom: 1.4rem;
+  border-bottom: 1px solid var(--hair);
+}
+@media (min-width: 900px) { .plate-head { grid-template-columns: 7rem 1fr; gap: 3rem; } }
+
+.plate-mark {
+  font-family: var(--font-display-2);
+  font-weight: 500;
+  font-size: clamp(2.2rem, 4.6vw, 3.6rem);
+  line-height: 0.8;
+  color: var(--color-blue);
+}
+
+.plate-head h2 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(1.8rem, 4.3vw, 3.3rem);
+  line-height: 1;
+  letter-spacing: 0.01em;
+}
+
+.plate-lede {
+  margin-top: 1.8rem;
+  max-width: 62ch;
+  font-size: 1.05rem;
+  line-height: 1.65;
+  color: var(--color-muted);
+}
+
+.plate-foot {
+  margin-top: 2.4rem;
+  max-width: 74ch;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--color-muted);
+}
+.plate-foot code { font-family: var(--font-mono); font-size: 0.85em; color: var(--color-ink); }
+
+/* --- the three verdicts. Drawn, not modelled: one gate outline and where the
+   line of travel stops. Form carries the difference, so the three still read
+   apart in greyscale and to anyone who cannot separate red from green. */
+
+.verdicts {
+  margin-top: 3rem;
+  display: grid;
+  gap: 3rem;
+}
+@media (min-width: 800px) { .verdicts { grid-template-columns: repeat(3, 1fr); gap: 2.6rem; } }
+
+.verdict { border-top: 1px solid var(--hair); padding-top: 1.6rem; }
+
+/* Sized by height at every width. The three boxes are cut to their own ink and
+   so have three different aspect ratios; any width cap therefore hands them
+   three different heights - measured on a 390px phone as 83.5, 95.2 and 130.6px
+   under the old 11rem cap. The ceiling is low enough that `max-width` never
+   engages on the widest of the three. */
+.verdict-plate {
+  display: block;
+  height: clamp(72px, 13vh, 130px);
+  width: auto;
+  max-width: 100%;
+  margin-inline: auto;
+}
+
+.verdict-key {
+  margin-top: 1.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+}
+
+.verdict dd { margin-top: 0.9rem; max-width: 32ch; line-height: 1.6; color: var(--color-muted); }
+
+/* --- the gate-off measurement. */
+
+.gate-off { margin-top: 3rem; display: grid; gap: 2rem; }
+@media (min-width: 760px) { .gate-off { grid-template-columns: 1fr 1fr; gap: 2.4rem; } }
+
+.reading { border: 1px solid var(--hair); padding: 2rem 1.8rem 2.2rem; background: var(--color-paper-2); }
+.reading.is-block { border-color: var(--color-block); }
+.reading.is-allow { border-color: var(--color-allow); }
+
+.reading h3 {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.reading.is-block h3 { color: var(--color-block); }
+.reading.is-allow h3 { color: var(--color-allow); }
+
+.reading dl { margin-top: 1.8rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1.4rem; }
+.reading dd {
+  font-family: var(--font-display-2);
+  font-weight: 500;
+  font-size: clamp(1.8rem, 5vw, 2.8rem);
+  line-height: 0.95;
+}
+.reading.is-block dd { color: var(--color-block); }
+.reading.is-allow dd { color: var(--color-allow); }
+.reading dt { margin-top: 0.6rem; font-size: 0.85rem; color: var(--color-muted); }
+
+/* --- the close. */
+
+.landing-close {
+  margin-inline: auto;
+  max-width: 1480px;
+  padding: 6rem calc(var(--sheet-inset) + 2.2rem) 7rem;
+  text-align: center;
+}
+@media (min-width: 900px) { .landing-close { padding-block: 8rem 9rem; } }
+
+.landing-close h2 {
+  margin-inline: auto;
+  max-width: 18ch;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(2.15rem, 5.3vw, 4.3rem);
+  line-height: 0.98;
+  letter-spacing: 0.01em;
+  text-wrap: balance;
+}
+
+.landing-close > p {
+  margin: 1.8rem auto 0;
+  max-width: 48ch;
+  font-size: 1.05rem;
+  line-height: 1.65;
+  color: var(--color-muted);
+}
+
+.landing-close .close-note {
+  margin-top: 3.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.landing-close a[href] { margin-top: 2.6rem; display: inline-flex; }
+
+/* The rings have to run out of the sheet, not stop at an edge. Masking the
+   canvas itself rather than laying a gradient over it means the paper under the
+   fade is the page's own paper, so no second cream can drift away from the
+   first. The side fade matches the shader's own uTextSide hold-back. */
+.landing-hero > div[aria-hidden="true"]:first-of-type {
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 62%, transparent 97%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 62%, transparent 97%);
+}
+
+/* The sheet rule stops with the rings rather than boxing a section that has no
+   bottom any more. */
+.landing-hero::after { border-bottom-color: transparent; }
+
+/* --- Corrections, 1 Sept 2026, from Sumeet looking at the built page.
+
+   The key letters were Bodoni Moda 700 at 5.6rem. A Didone at that size is all
+   thin-and-thick and no letter, the beats each took a full screen of height,
+   and a 9rem index column left a third of the sheet empty on the right. The
+   plate head used a different grid from the beat, so D sat out of line with
+   A, B and C - on a drawing that is the one mistake that reads as sloppy. */
+
+.beat,
+.plate-head {
+  grid-template-columns: var(--key-col) minmax(0, 1fr);
+  gap: 0 1.6rem;
+}
+
+@media (min-width: 900px) {
+  .beat,
+  .plate-head {
+    /* One grid for every keyed row on the page, so every letter sits on one
+       vertical line and every title starts on another. */
+    grid-template-columns: var(--key-col) minmax(0, 1fr) 6rem;
+    gap: 0 2.4rem;
+  }
+  .beat { padding-block: 3rem; }
+  .plate { padding-block: 4rem 4.5rem; }
+}
+
+/* Mono, not Didone. These are drawing keys - the same letters that appear in a
+   margin note and a dimension callout - and a mono at one weight is what a
+   drawing sets them in. */
+/* --- The drawing keys, resized and re-faced 1 Sept 2026 on Sumeet's word:
+   *"they are small as heck … make them bigger so they fit and occupy some real
+   space … and also change the font style used for them"*.
+
+   Mono at 1.05rem, then at 1.75rem, was still a footnote beside a 66px title.
+   The face is now Archivo at 700 and the letters run to roughly four fifths of
+   the title they key. **Not Bodoni Moda**, which is the one face that has been
+   rejected outright for these letters - *"not good … too thin and thick"* - and
+   not the display serif either, which carries the same stroke contrast that the
+   rejection was about. A single letter standing on its own is where stroke
+   contrast reads worst, so the key is set in the grotesque: one even weight, the
+   way a drawing sheet stencils a callout. */
+
+.beat-mark,
+.plate-mark {
+  /* The condensed grotesque gives large drawing keys one even, stencil-like
+     weight without borrowing the hero, body, or measurement voices. */
+  font-family: var(--font-key);
+  font-weight: 700;
+  font-size: clamp(2.3rem, 6.2vw, 7.5rem);
+  letter-spacing: 0;
+  line-height: 1;
+  /* Optical: drops the letter's cap line onto the title's; a shared grid row
+     aligns boxes, not the cap lines of two different faces. */
+  padding-top: 0.02em;
+  color: var(--color-blue);
+}
+
+.beat-body h2,
+.plate-head h2 { font-size: clamp(2rem, 3.8vw, 3.1rem); }
+
+.beat-body p { margin-top: 0.8rem; max-width: 58ch; }
+
+.plate-head { align-items: start; }
+.plate-head h2 { padding-bottom: 1.2rem; }
+
+.plate-lede { margin-top: 1.4rem; }
+
+/* --- The beats widened, 1 Sept 2026. Sumeet: they must be much bigger and take
+   far more of the page.
+
+   Measured before the change, at 1440x900: each band 188.1px tall, the three
+   together 565.2px against a 3731px page - 15% of the sheet for the whole
+   product story, while the closing sentence held 700.9px. The title ended at
+   x=490 and nothing else began before x=1290, so 800px of every band was empty
+   paper. Taller bands alone would have restored the empty right third that the
+   earlier correction above was written to remove, so the height comes from
+   using the width rather than from padding: the title takes one column and the
+   sentence takes the next, and the freed 6rem index track pays for the second
+   column. The key track is one token so A, B, C and D always sit on one line. */
+
+@media (min-width: 900px) {
+  .beat {
+    grid-template-columns: var(--key-col) minmax(0, 1.06fr) minmax(0, 0.94fr);
+    /* 2.4rem, not more: the column gap is also what sets where the title starts,
+       and .plate-head shares that measure so D lines up with A, B and C. */
+    column-gap: 2.4rem;
+    align-items: start;
+    padding-block: clamp(5rem, 6.4vw, 7.5rem);
+  }
+
+  /* The h2 and the p become grid items of the band itself. The wrapper stays in
+     the markup so the two are still one group when the grid collapses. */
+  .beat-body { display: contents; }
+
+  /* One size for every keyed title on the page. The plate heads were left on the
+     smaller step when the beats were widened, so D read as a lesser row than A,
+     B and C while sharing their grid. */
+  .beat-body h2,
+  .plate-head h2 { font-size: clamp(2.6rem, 4.6vw, 4.4rem); line-height: 0.98; }
+
+  .beat-body p {
+    margin-top: 0;
+    max-width: 34ch;
+    font-size: 1.2rem;
+    line-height: 1.55;
+    /* Optical, checked in the render: the sentence sits on the display line's
+       x-height rather than on its cap line, which reads as a hanging column. */
+    padding-top: 0.75rem;
+  }
+}
+
+/* The close held more of the sheet than the three beats did. It is one sentence
+   and one way in; the beats are the product. */
+@media (min-width: 900px) {
+  .landing-close { padding-block: 6rem 6.5rem; }
+}
+
+/* --- The plate heads put on the beats' grid, 1 Sept 2026.
+
+   D read as a different kind of row from A, B and C: same key and title, but its
+   lede sat under the rule at the far left instead of in the column beside the
+   title. The head now carries the lede as its third item, so a keyed plate and a
+   keyed beat are the same row. An unkeyed head has no margin column to hold, so
+   it starts at the sheet edge rather than indented against an empty track. */
+
+.plate-head .plate-lede { margin-top: 0.9rem; grid-column: 2; }
+.plate-head--open { grid-template-columns: minmax(0, 1fr); }
+.plate-head--open .plate-lede { grid-column: 1; }
+
+@media (min-width: 900px) {
+  .plate-head { grid-template-columns: var(--key-col) minmax(0, 1.06fr) minmax(0, 0.94fr); }
+  .plate-head--open { grid-template-columns: minmax(0, 1.06fr) minmax(0, 0.94fr); }
+
+  .plate-head .plate-lede {
+    grid-column: auto;
+    margin-top: 0;
+    max-width: 34ch;
+    font-size: 1.05rem;
+    /* Same optical hang as the beats: the sentence sits on the display line's
+       x-height rather than on its cap line. */
+    padding-top: 0.75rem;
+  }
+}
+
+/* The three verdicts are the vocabulary the whole site uses afterwards, so the
+   words carry the weight, not the plates. */
+.verdict-key {
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 4.15vw, 3rem);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  margin-top: 1.2rem;
+}
+
+/* --- The verdicts plate given the whole viewport, 1 Sept 2026, on Sumeet's
+   word: it held 627.9 px of a 900 px screen and its content sat at the top of
+   that band. `min-height: 100vh` with the content centred in the leftover space
+   is what makes it read as a screen of its own rather than as a short section.
+   `min-height`, never `height`: the words have to be able to grow past the
+   viewport on a narrow window or at a large text size, and a fixed height would
+   crop them. */
+
+@media (min-width: 900px) {
+  .plate--full {
+    /* The sticky header covers `--header-h` of the viewport at all times, so a
+       band that is to be the only thing on screen is that much shorter than the
+       viewport - not `100vh`, which always overflows by exactly the header. */
+    min-height: calc(100svh - var(--header-h));
+    scroll-margin-top: var(--header-h);
+    /* Proximity, never mandatory: the page is read top to bottom and a mandatory
+       track fights every ordinary scroll. This lands the band when a scroll ends
+       near it and does nothing otherwise. */
+    scroll-snap-align: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    /* Symmetric, or `justify-content: center` centres inside a box that is
+       itself 8px low - the same fault the hero grid had. Tied to viewport height
+       because the band has to fit a short laptop, not only a tall monitor. */
+    padding-block: clamp(2rem, 4vh, 3.5rem);
+  }
+
+  /* Sized by height, not width. Each mark's box is now cut to its own ink and
+     the three inks are different widths, so a width cap would hand them three
+     different heights. Height also ties the mark to the band it has to fit
+     inside, which is what a 1366x768 laptop needs - measured 727.4px of content
+     in 684px of visible area before this. */
+  .plate--full .verdict-plate {
+    height: clamp(84px, 17vh, 168px);
+    width: auto;
+    max-width: 100%;
+    margin-inline: auto;
+  }
+
+  /* The mark is drawn centred in its own viewBox and now fills the column, so a
+     left-set word under it sat off the axis the drawing had already established.
+     One axis per column: mark, verdict, sentence. */
+  .plate--full .verdict { text-align: center; }
+  .plate--full .verdict dd { margin-inline: auto; }
+
+  .plate--full .verdicts { margin-top: clamp(1.5rem, 5vh, 4rem); }
+
+  .plate--full .verdict { padding-top: clamp(1.6rem, 3vh, 2.6rem); }
+  .plate--full .verdict dd { margin-top: 1.1rem; max-width: 34ch; }
+}
+.verdict dd { margin-top: 0.8rem; }
+
+
+/* ------------------------------------------------------------- detail sheets
+   The landing page is the general arrangement. These five are the detail
+   sheets filed behind it: same paper, same hairlines, same margin keys, and
+   deliberately no orbit and no poster type. A drawing set is read at a desk,
+   which is the register the proof pages needed and did not have.
+
+   Everything below replaces the glass system the old world used - white fills,
+   a specular streak across every surface, a 6px coloured spine down each
+   decision. None of it was drawing; all of it was chrome. */
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-family: var(--font-display);
+  font-size: 1.45rem;
+  letter-spacing: -0.02em;
+  color: var(--color-ink);
+  text-decoration: none;
+}
+
+.brand-mark {
+  width: 1.15rem;
+  height: 1.6rem;
+  flex: none;
+  color: var(--color-blue);
+}
+
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 76px;
+  padding-inline: var(--sheet-inset);
+  border-bottom: 1px solid var(--hair);
+  background: var(--color-paper);
+}
+
+@media (min-width: 640px) {
+  .site-header { min-height: 84px; padding-inline: calc(var(--sheet-inset) + 1.4rem); }
+}
+
+.site-nav {
+  display: flex;
+  align-items: center;
+  gap: 1.6rem;
+}
+
+@media (min-width: 640px) { .site-nav { gap: 2.4rem; } }
+
+.site-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 2rem;
+  padding: 2.4rem;
+  border-top: 1px solid var(--hair);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  letter-spacing: 0.06em;
+  color: var(--color-blue);
+}
+
+/* --- the sheet index. A drawing set numbers its sheets, and the number is how
+   you know where you are without reading a title. The tab strip this replaces
+   was a row of labels with a 3px underline under the live one, which is chrome
+   from a product this is not. Here the number is inked on the current sheet and
+   ghosted on the rest, so the row reads as an index rather than as navigation
+   competing with the header above it. */
+
+.sheet-index {
+  border-bottom: 1px solid var(--hair);
+  background: var(--color-paper);
+}
+
+.sheet-index ol {
+  display: flex;
+  overflow-x: auto;
+  margin: 0 auto;
+  padding-inline: var(--sheet-inset);
+  max-width: 1480px;
+  list-style: none;
+  scrollbar-width: none;
+  scroll-padding-inline: 50%;
+}
+
+.sheet-index ol::-webkit-scrollbar { display: none; }
+
+@media (min-width: 640px) {
+  .sheet-index ol { padding-inline: calc(var(--sheet-inset) + 1.4rem); }
+}
+
+.sheet-index a {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.95rem 1.5rem 0.95rem 0;
+  margin-right: 1.5rem;
+  white-space: nowrap;
+  text-decoration: none;
+  color: var(--color-muted);
+  transition: color var(--motion-control) var(--ease-refract);
+}
+
+.sheet-index__no {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  color: var(--color-muted);
+  opacity: 0.6;
+}
+
+.sheet-index__label { font-size: 0.92rem; }
+
+.sheet-index a:hover { color: var(--color-ink); }
+.sheet-index a:hover .sheet-index__no { color: var(--color-blue); }
+
+.sheet-index [aria-current="page"] a { color: var(--color-ink); }
+.sheet-index [aria-current="page"] .sheet-index__no { color: var(--color-blue); opacity: 1; }
+
+/* --- the title block. On a real drawing this sits in one corner of the sheet
+   and carries the sheet identity and its key figures. It is the whole reason
+   the masthead illustration could be deleted rather than redrawn: a detail
+   sheet has no hero image, and every page is quieter and shorter without one. */
+
+.title-block {
+  position: relative;
+  margin-inline: auto;
+  max-width: 1480px;
+  padding: 3.4rem calc(var(--sheet-inset) + 1rem) 2.6rem;
+  border-bottom: 1px solid var(--hair);
+}
+
+@media (min-width: 900px) {
+  .title-block { padding: 5rem calc(var(--sheet-inset) + 3.4rem) 3.2rem; }
+}
+
+/* Registration ticks, the same four marks the landing sheet carries, so a
+   visitor arriving from it can see they are on the same paper. */
+.title-block__tick {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border-color: var(--hair);
+  border-style: solid;
+}
+
+.title-block__tick[data-at="tl"] {
+  top: 1.4rem; left: var(--sheet-inset);
+  border-width: 1px 0 0 1px;
+}
+
+.title-block__tick[data-at="tr"] {
+  top: 1.4rem; right: var(--sheet-inset);
+  border-width: 1px 1px 0 0;
+}
+
+.title-block h1 {
+  max-width: 17ch;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(2.15rem, 5vw, 3.65rem);
+  line-height: 0.98;
+  letter-spacing: 0.006em;
+  text-wrap: balance;
+}
+
+.title-block__lede {
+  margin-top: 1.4rem;
+  max-width: 62ch;
+  font-size: 1.05rem;
+  line-height: 1.65;
+  color: var(--color-muted);
+}
+
+/* The strip a drawing puts under its title. Sheet number first, then whatever
+   this sheet is measuring - a page with nothing to measure shows the number
+   alone rather than inventing a statistic to fill the row. */
+.title-block__strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 2.8rem;
+  margin-top: 2.6rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--hair);
+  font-family: var(--font-mono);
+}
+
+.title-block__strip dt {
+  font-size: 0.62rem;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.title-block__strip dd {
+  margin-top: 0.35rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink);
+}
+
+/* The first figure on the strip is the sheet number, and it is the one mark on
+   this block the accent is spent on - the same job the key letter does on the
+   landing plates. */
+.title-block__strip div:first-child dd { color: var(--color-blue); }
+
+.title-block__brand { margin-top: 1.8rem; }
+
+.sheet {
+  margin-inline: auto;
+  max-width: 1480px;
+  padding-inline: calc(var(--sheet-inset) + 1rem);
+}
+
+@media (min-width: 900px) {
+  .sheet { padding-inline: calc(var(--sheet-inset) + 3.4rem); }
+}
+
+.sheet-foot {
+  margin-inline: auto;
+  max-width: 1480px;
+  padding: 2.6rem calc(var(--sheet-inset) + 1rem) 3rem;
+  border-top: 1px solid var(--hair);
+}
+
+@media (min-width: 900px) {
+  .sheet-foot { padding-inline: calc(var(--sheet-inset) + 3.4rem); }
+}
+
+.sheet-foot > p {
+  max-width: 74ch;
+  font-size: 0.97rem;
+  line-height: 1.65;
+  color: var(--color-muted);
+}
+
+.sheet-foot__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.8rem;
+  margin-top: 2rem;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  letter-spacing: 0.06em;
+}
+
+.sheet-foot__row a { color: var(--color-blue); }
+.sheet-foot__row .brand { font-size: 1.2rem; }
+
+/* --- controls. A drawing has no pills and no fills except where a thing is
+   solid: the primary action is inked, everything else is a hairline on paper.
+   The outline button used to be white-on-cream, which put a second paper on
+   the sheet for no reason. */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  padding: 0.7rem 1.3rem;
+  border: 1px solid var(--color-blue);
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background var(--motion-control) var(--ease-refract),
+    color var(--motion-control) var(--ease-refract),
+    box-shadow var(--motion-control) var(--ease-refract);
+}
+
+.btn--outline { background: transparent; color: var(--color-blue); }
+.btn--primary { background: var(--color-blue); color: var(--color-paper); }
+
+.btn--outline:hover:not(:disabled) { background: var(--color-blue); color: var(--color-paper); }
+
+/* What lifts a control here is a second hairline offset from the first, which
+   is how a drafting sheet shows a raised plate. Not a drop shadow. */
+.btn--primary:hover:not(:disabled) { box-shadow: var(--shadow-lift); }
+
+.btn:disabled { cursor: wait; opacity: 0.45; }
+
+.marginal {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-blue);
+}
+
+/* --- plates. One rule across the top with a short crimson stub at its left
+   end where the plate begins, the heading held in the margin column, and the
+   content set against it. Identical in structure to the landing sections,
+   which is what makes the two halves one drawing. */
+
+.plate-row {
+  position: relative;
+  display: grid;
+  gap: 1.8rem;
+  padding-block: 2.8rem 3rem;
+  border-top: 1px solid var(--hair);
+}
+
+.plate-row::before {
+  position: absolute;
+  top: -1px;
+  left: 0;
+  width: clamp(4rem, 9vw, 7rem);
+  height: 1px;
+  background: var(--color-blue);
+  content: "";
+}
+
+@media (min-width: 1024px) {
+  .plate-row {
+    grid-template-columns: minmax(220px, 0.34fr) minmax(0, 0.66fr);
+    gap: 3.5rem;
+    padding-block: 4rem 4.4rem;
+  }
+
+  .plate-row > header {
+    position: sticky;
+    top: 7.5rem;
+    align-self: start;
+  }
+}
+
+.plate-row > header h2 {
+  max-width: 18ch;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(1.5rem, 2.65vw, 2.05rem);
+  line-height: 1.04;
+  letter-spacing: 0.006em;
+  text-wrap: balance;
+}
+
+.plate-row__intro {
+  margin-top: 0.9rem;
+  max-width: 46ch;
+  font-size: 1rem;
+  line-height: 1.65;
+  color: var(--color-muted);
+}
+
+.plate-row__body { min-width: 0; }
+
+/* --- folds. The committed documents run to thousands of pixels; open by
+   default they were the page, and the thing a visitor came to do sat above an
+   unreadable wall. */
+
+.fold {
+  border: 1px solid var(--hair);
+  background: var(--color-paper-2);
+}
+
+.fold + .fold { margin-top: -1px; }
+
+.fold > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 3rem;
+  padding: 0.8rem 1rem;
+  font-weight: 700;
+  color: var(--color-blue);
+  cursor: pointer;
+  list-style: none;
+}
+
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary:hover { background: rgba(144, 0, 32, 0.04); }
+
+.chev {
+  flex: none;
+  transition: transform var(--motion-control) var(--ease-refract);
+}
+
+.fold[open] > summary .chev { transform: rotate(90deg); }
+
+.fold__hint {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  color: var(--color-muted);
+}
+
+.fold__body {
+  padding: 1.2rem 1rem 1.4rem;
+  border-top: 1px solid var(--hair);
+  background: var(--color-paper);
+}
+
+@media (min-width: 640px) { .fold__body { padding: 1.6rem 1.4rem 1.8rem; } }
+
+.note {
+  max-width: 78ch;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--color-muted);
+}
+
+/* A part that is specified but not yet present, drawn the way a drawing draws
+   one: a dashed outline holding its own space. */
+.pending {
+  border: 1px dashed var(--hair);
+  background: repeating-linear-gradient(
+    -45deg, transparent 0 7px, rgba(17, 17, 17, 0.03) 7px 14px);
+  animation: pending-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pending-pulse { 50% { opacity: 0.5; } }
+
+@media (prefers-reduced-motion: reduce) { .pending { animation: none; } }
+
+/* --- one decision, stamped on the sheet. The mark is the same gate outline
+   the landing page draws its three verdicts with, so form carries the
+   difference before colour does and the three still read apart in greyscale
+   and to anyone who cannot separate red from green. */
+
+.verdict-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+  padding: 0.9rem 1rem 1rem;
+  border: 1px solid var(--hair);
+  background: var(--color-paper-2);
+}
+
+.verdict-row + .verdict-row { margin-top: -1px; }
+
+.verdict-mark { width: 3.4rem; height: auto; margin-top: 0.15rem; }
+
+.verdict-row.is-allow { color: var(--color-allow); }
+.verdict-row.is-hold { color: var(--color-hold); }
+.verdict-row.is-block { color: var(--color-block); }
+
+.verdict-row__body { min-width: 0; color: var(--color-ink); }
+
+.verdict-row__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.verdict-row__tag {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: currentColor;
+}
+
+.verdict-row.is-allow .verdict-row__tag { color: var(--color-allow); }
+.verdict-row.is-hold .verdict-row__tag { color: var(--color-hold); }
+.verdict-row.is-block .verdict-row__tag { color: var(--color-block); }
+
+.verdict-row__head code {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--color-blue-ink);
+}
+
+.verdict-row__title { font-size: 0.93rem; color: var(--color-ink); }
+
+.verdict-row__why {
+  margin-top: 0.35rem;
+  font-size: 0.93rem;
+  line-height: 1.55;
+  color: var(--color-muted);
+}
+
+.verdict-row__detail,
+.verdict-row__id {
+  margin-top: 0.35rem;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  color: var(--color-muted);
+}
+
+/* --- the budget bar, drawn as a dimension line: hairline ends, and the three
+   segments hatched at three angles rather than filled, so the bar belongs to
+   the drawing instead of sitting on top of it and so the reading survives
+   greyscale. */
+
+.meter__bar {
+  position: relative;
+  display: flex;
+  height: 1.6rem;
+  border-top: 1px solid var(--hair);
+  border-bottom: 1px solid var(--hair);
+  background: var(--color-paper-2);
+}
+
+.meter__bar::before,
+.meter__bar::after {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 1px;
+  background: var(--color-ink);
+  content: "";
+}
+
+.meter__bar::before { left: 0; }
+.meter__bar::after { right: 0; }
+
+.meter__bar > span { display: block; }
+
+.swatch {
+  display: inline-block;
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 1px solid var(--hair);
+  vertical-align: -1px;
+  margin-right: 0.15rem;
+}
+
+.meter__bar .is-spent, .swatch.is-spent {
+  background: repeating-linear-gradient(
+    -45deg, var(--color-block) 0 2px, transparent 2px 5px);
+}
+
+.meter__bar .is-held, .swatch.is-held {
+  background: repeating-linear-gradient(
+    45deg, var(--color-hold) 0 2px, transparent 2px 5px);
+}
+
+/* Unspent is blank paper. Hatching it made a fresh budget - the state every
+   visit opens in - read as a skeleton still loading. */
+.meter__bar .is-free { background: transparent; }
+.swatch.is-free { background: var(--color-paper); }
+
+.meter__keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 2rem;
+  margin-top: 0.9rem;
+}
+
+.meter__keys dt { font-size: 0.82rem; color: var(--color-muted); }
+
+.meter__keys dd {
+  margin-top: 0.2rem;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.meter__stop { margin-top: 0.9rem; font-weight: 700; color: var(--color-block); }
+
+.error-line {
+  margin-block: 0.6rem;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--color-block);
+}
+
+.prose { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.prose code { font-family: var(--font-mono); font-size: 0.88em; color: var(--color-blue-ink); }
+.prose strong { font-weight: 700; }
+
+.rzp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--hair);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--color-muted);
+}
+
+.rzp-chip img { width: 1.15rem; height: 1.15rem; object-fit: contain; }
+
+
+/* ---------------------------------------------------- what the sheets carry
+   Everything above is chrome shared by the five detail sheets. These are the
+   objects drawn on them: specification lists, keyed rule tables, dimension
+   chains, readings and the arrangement drawing. All of them are hairline on
+   paper, because that is the one material this world has. */
+
+/* --- a specification list. Two columns of name, value, note - what a drawing
+   puts in its parts list, and the shape policy.yaml already has. */
+
+.spec-list {
+  display: grid;
+  gap: 1.2rem 2.6rem;
+}
+
+@media (min-width: 640px) { .spec-list { grid-template-columns: 1fr 1fr; } }
+
+.spec-list > div {
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--hair);
+}
+
+.spec-list dt { font-weight: 700; font-size: 0.95rem; }
+
+.spec-list__value {
+  margin-top: 0.3rem;
+  font-family: var(--font-mono);
+  font-size: 1.45rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-blue);
+}
+
+.spec-list__hint {
+  margin-top: 0.3rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--color-muted);
+}
+
+/* --- the rule table. The id is a reference number held in the margin, the way
+   a drawing keys a detail; it was a heading in its own right before, which put
+   a code where a sentence belongs. */
+
+.rule-list { border-top: 1px solid var(--hair); }
+
+.rule-list article {
+  display: grid;
+  gap: 0.5rem;
+  padding-block: 1.5rem;
+  border-bottom: 1px solid var(--hair);
+}
+
+@media (min-width: 640px) {
+  .rule-list article { grid-template-columns: 3.5rem minmax(0, 1fr); gap: 1.4rem; }
+}
+
+.rule-list__id {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--color-blue);
+}
+
+.rule-list h3 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.rule-list article > div > p {
+  margin-top: 0.5rem;
+  max-width: 68ch;
+  line-height: 1.65;
+  color: var(--color-muted);
+}
+
+/* Nine folds stack inside this one plate, and as filled accent panels they were
+   345,343 px2 - 22% of the plate's body area - in the only accent colour on the
+   page, so the disclosure outranked the nine rules it belongs to. Measured
+   2 Sept 2026: 9 x 721x53 px against a 1979px plate. Elsewhere a fold appears
+   once or twice and keeps the panel, which is why this is scoped here. The
+   chevron keeps the accent: it is what carries the affordance once the fill is
+   gone. */
+.rule-list .fold {
+  border: 0;
+  background: none;
+}
+
+.rule-list .fold > summary { color: var(--color-muted); }
+.rule-list .fold > summary .chev { color: var(--color-blue); }
+.rule-list .fold > summary:hover { background: none; color: var(--color-ink); }
+.rule-list .fold[open] > summary { color: var(--color-ink); }
+
+.guard-list > div {
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--hair);
+}
+
+.guard-list > div + div { margin-top: 1rem; }
+
+.guard-list dt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.7rem;
+  font-weight: 700;
+}
+
+.guard-list dt code {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  color: var(--color-muted);
+}
+
+.guard-list dd {
+  margin-top: 0.35rem;
+  max-width: 68ch;
+  line-height: 1.6;
+  color: var(--color-muted);
+}
+
+.guard-list.is-exact dt code { color: var(--color-blue); }
+.guard-list.is-exact dd { font-size: 0.88rem; }
+
+/* --- a reading taken off the sheet. Shared with the landing page, so the
+   gate-off figures there and a mutation result here are the same object. The
+   two extra lines below are what a result needs and a measurement does not. */
+
+.reading__body { margin-top: 0.9rem; max-width: 62ch; line-height: 1.6; }
+
+.reading__foot {
+  margin-top: 0.7rem;
+  max-width: 62ch;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--color-muted);
+}
+
+.reading__hash {
+  margin-top: 0.7rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+  color: var(--color-muted);
+}
+
+.ba-pair { display: grid; gap: 1.2rem; margin-top: 1.4rem; }
+@media (min-width: 760px) { .ba-pair { grid-template-columns: 1fr 1fr; } }
+.ba-pair .reading { padding: 1.2rem 1.2rem 1.4rem; }
+.ba-pair .reading h3 { font-size: 0.95rem; }
+
+.count-list { display: grid; gap: 0.5rem 2rem; }
+@media (min-width: 560px) { .count-list { grid-template-columns: 1fr 1fr; } }
+
+.count-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--hair);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+
+.count-list dt { color: var(--color-muted); }
+.count-list dd { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* --- a shelf of things to try. Not a form: every item is one click, and the
+   group name is a key in the margin rather than a heading of its own. */
+
+/* The shelf starts with the most legible boundary test and leaves the remaining
+   families available without making a first-time visitor scan every option. */
+.shelf__group + .shelf__group { margin-top: 1rem; }
+.shelf__key {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.7rem 0;
+  color: var(--color-muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  list-style: none;
+}
+.shelf__key::-webkit-details-marker { display: none; }
+.shelf__key::before { content: '+'; color: var(--color-blue); }
+.shelf__group[open] .shelf__key::before { content: '−'; }
+.shelf__key span:first-child { margin-right: auto; }
+.shelf__items { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+
+.pick-grid { display: grid; gap: 0.7rem; }
+@media (min-width: 560px) { .pick-grid { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 1100px) { .pick-grid { grid-template-columns: repeat(3, 1fr); } }
+
+.pick-grid > .pick,
+.pick-grid > div { height: 100%; }
+.pick-grid > div { display: flex; flex-direction: column; }
+.pick-grid > div > .pick { flex: 1; }
+
+.pick {
+  justify-content: flex-start;
+  padding: 0.65rem 0.9rem;
+  border-color: var(--hair);
+  font-size: 0.88rem;
+  font-weight: 400;
+  text-align: left;
+  color: var(--color-ink);
+}
+
+.pick:hover:not(:disabled) { border-color: var(--color-blue); background: var(--color-blue); }
+
+.pick.is-inline { width: auto; }
+.pick.is-full { width: 100%; }
+.pick.is-stacked { flex-direction: column; align-items: flex-start; gap: 0.2rem; }
+.pick__name { font-weight: 700; }
+.pick__meta { font-family: var(--font-mono); font-size: 0.78rem; }
+.pick__why { margin-top: 0.35rem; font-size: 0.74rem; line-height: 1.45; color: var(--color-muted); }
+
+/* The primary skin marks the chosen record on /trace, so it has to beat the
+   hairline rule above it. */
+.pick.btn--primary { border-color: var(--color-blue); color: var(--color-paper); }
+
+.result-well { margin-top: 2rem; padding-top: 1.6rem; border-top: 1px solid var(--hair); }
+
+/* New decisions are state, not scenery: dense result areas become readable the
+   moment they arrive instead of waiting for the page entrance animation. */
+.result-well .reveal,
+.feed-well .reveal { opacity: 1; transform: none; transition: none; }
+
+/* Newest first inside a fixed box: without it every click grew the page, so
+   the buttons walked off screen and a spammer could scroll it forever. */
+.feed-well { max-height: 24rem; overflow: auto; margin-top: 1.4rem; }
+
+.act-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.7rem;
+  margin-top: 1.5rem;
+}
+
+.act-row__said { font-size: 0.85rem; color: var(--color-muted); }
+.act-row__said.is-error { font-weight: 700; color: var(--color-block); }
+
+.said { font-size: 0.85rem; font-weight: 700; }
+.said.is-ok { color: var(--color-allow); }
+.said.is-error { color: var(--color-block); }
+
+/* --- fields. A box on a drawing is a box on the paper, not a white card
+   floating over it. */
+
+.field { display: flex; flex-direction: column; gap: 0.25rem; }
+.field__label { font-size: 0.85rem; font-weight: 700; }
+.field__hint { font-size: 0.74rem; line-height: 1.4; color: var(--color-muted); }
+
+.field input,
+.field textarea {
+  min-height: 2.75rem;
+  margin-top: 0.2rem;
+  padding: 0.5rem 0.6rem;
+  width: 11rem;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+}
+
+.field.is-narrow input { width: 7rem; }
+.field.is-wide input,
+.field textarea { width: 100%; }
+
+.field-row { display: flex; flex-wrap: wrap; gap: 1.2rem; }
+
+/* A money field carries its unit. These three inputs are rupees while every
+   amount the API moves is paise, so an unlabelled number here is the one place
+   this site could mislead by leaving something out. */
+.field__money { display: flex; align-items: center; gap: 0.4rem; font-family: var(--font-mono); }
+.field__money input { margin-top: 0; width: 8.5rem; }
+
+/* --- the guided demo, rebuilt into the sheet 2 Sept 2026. Four plates and a
+   station index, in place of a 400vh sticky shell driving a 400vw track. */
+
+.demo-count {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--color-blue);
+}
+
+/* The index sticks under the header so the four stations stay reachable while a
+   plate is being read. It reads --header-h rather than a number: the header is
+   sticky at top 0 and a hardcoded offset here slides the index under it at
+   whichever width the token changes at. */
+.demo-stations {
+  position: sticky;
+  top: var(--header-h);
+  z-index: 10;
+  background: var(--color-paper);
+  border-bottom: 1px solid var(--hair);
+}
+
+.demo-stations [aria-current="step"] a { color: var(--color-ink); }
+.demo-stations [aria-current="step"] .sheet-index__no { color: var(--color-blue); opacity: 1; }
+
+/* The guided walkthrough is an operation, not a reference sheet. At desktop
+   sizes its inputs and results need the full reading width; the sticky station
+   index keeps the journey visible without a second, competing column. */
+@media (min-width: 1024px) {
+  .demo-title-block h1 {
+    max-width: 18ch;
+    font-size: clamp(3.25rem, 5.6vw, 5rem);
+  }
+
+  .demo-sheet .plate-row {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(14rem, 0.85fr) minmax(0, 1.15fr);
+    gap: 1.8rem;
+    min-block-size: calc(100svh - var(--header-h) - 3.75rem);
+    align-content: stretch;
+    padding-block: 3.6rem 4rem;
+    scroll-margin-top: calc(var(--header-h) + 3.75rem);
+  }
+
+  .demo-sheet .plate-row > header { position: static; align-self: end; }
+  .demo-sheet .plate-row__body { align-self: start; }
+
+  .demo-sheet .plate-row > header h2 {
+    max-width: 28ch;
+    font-size: clamp(2.8rem, 4.25vw, 4.25rem);
+  }
+
+  .demo-sheet .plate-row__intro {
+    max-width: 58ch;
+    font-size: 1.25rem;
+    line-height: 1.7;
+  }
+
+  .demo-sheet .plate-row__body { font-size: 1.08rem; }
+  .demo-sheet .field-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2.5rem; }
+  .demo-sheet .field__label { font-size: 1.05rem; }
+  .demo-sheet .field__hint { font-size: 0.95rem; }
+  .demo-sheet .field input,
+  .demo-sheet .field textarea { width: 100%; min-height: 4.25rem; padding: 0.9rem 1.15rem; font-size: 1.3rem; }
+  .demo-sheet .btn { min-width: 19rem; min-height: 4rem; padding: 1rem 1.9rem; font-size: 0.88rem; }
+  .demo-sheet .basket li { padding-block: 1.8rem; }
+  .demo-sheet .basket li { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+  .demo-sheet .basket__call { justify-self: end; }
+  .demo-sheet .basket__name { font-size: 1.3rem; }
+  .demo-sheet .basket__price { font-size: 1.4rem; }
+  .demo-sheet .basket__call { font-size: 0.8rem; }
+  .demo-sheet .reading { padding: 2.4rem 2.2rem 2.6rem; }
+  .demo-sheet .checkout-item { font-size: 1.2rem; }
+  .demo-sheet .checkout-price { font-size: 3rem; }
+  .demo-sheet #step-4 .reading { max-width: 44rem; padding: 1.1rem 1.35rem 1.2rem; }
+  .demo-sheet #step-4 .checkout-item { font-size: 1.05rem; }
+  .demo-sheet #step-4 .checkout-price { font-size: 2.5rem; }
+  .demo-sheet #step-4 .btn { min-height: 3.25rem; }
+  .demo-sheet #step-4 .mt-5 { margin-top: 0.75rem; }
+  .demo-sheet #step-4 .demo-said { font-size: 0.82rem; }
+  .demo-sheet #step-4 .mt-4 { margin-top: 0.75rem; }
+  .demo-sheet .onward a { padding-block: 1.4rem; }
+  .demo-sheet .onward__title { font-size: 1.2rem; }
+  .demo-sheet .onward__hint { font-size: 1rem; }
+  .demo-sheet #technical > header h2 { max-width: 22ch; font-size: clamp(2.5rem, 3.3vw, 3.45rem); }
+  .demo-sheet #technical .plate-row__intro { font-size: 1.1rem; line-height: 1.65; }
+  .demo-sheet #technical .onward a { padding-block: 0.75rem; }
+  .demo-sheet #technical .onward__title { font-size: 1.1rem; }
+  .demo-sheet #technical .onward__hint { font-size: 0.94rem; }
+  .demo-sheet #technical .mt-8 { margin-top: 1.25rem; }
+}
+
+/* The basket the AI is about to take to the gate: three rows, name against
+   price against the call, on the sheet's hairlines rather than in a card. */
+.basket { list-style: none; border-top: 1px solid var(--hair); }
+
+.basket li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.9rem;
+  padding: 0.95rem 0;
+  border-bottom: 1px solid var(--hair);
+}
+
+.basket__name { font-weight: 700; }
+.basket__price { font-family: var(--font-mono); font-size: 1.05rem; }
+
+.basket__call {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.basket__call.is-likely { color: var(--color-allow); }
+
+.reading__figure {
+  margin-top: 1.4rem;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(1.6rem, 3.4vw, 2.3rem);
+  line-height: 1.05;
+  color: var(--color-allow);
+}
+
+.verdict-row__amount {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  color: var(--color-muted);
+}
+
+.verdict-row__fold { margin-top: 0.4rem; font-size: 0.88rem; }
+.verdict-row__fold > summary { color: var(--color-blue); cursor: pointer; }
+.verdict-row__fold > p { margin-top: 0.35rem; color: var(--color-muted); }
+
+.demo-said { margin-top: 0.9rem; font-size: 0.9rem; color: var(--color-muted); }
+
+/* Test mode has to be unmissable next to a real Razorpay window, so it is a
+   stamp - the one place on this sheet where a fill carries the message. */
+.test-stamp {
+  display: inline-block;
+  margin-bottom: 0.9rem;
+  padding: 0.25rem 0.5rem;
+  background: var(--color-orange);
+  color: var(--color-paper);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.checkout-item { margin-top: 1rem; font-weight: 700; font-size: 1.05rem; }
+
+.checkout-price {
+  font-family: var(--font-mono);
+  font-size: 2.2rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+/* Where to go next: five equal doors, keyed by nothing but their own words. */
+.onward { list-style: none; border-top: 1px solid var(--hair); }
+.onward li { border-bottom: 1px solid var(--hair); }
+
+.onward a {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.3rem 1.2rem;
+  padding: 1rem 0.4rem;
+  color: var(--color-ink);
+  text-decoration: none;
+}
+
+.onward a:hover { background: var(--color-paper-2); color: var(--color-blue); }
+.onward__title { font-weight: 700; font-size: 1.02rem; }
+.onward__hint { font-size: 0.88rem; color: var(--color-muted); }
+
+/* --- the twin test. Two readings of one purchase, side by side, so the only
+   thing that changes between them is the text nobody read. */
+
+.twin-said { max-width: 68ch; font-size: 1.05rem; line-height: 1.6; }
+.twin-grid { display: grid; gap: 1.6rem; margin-top: 1.4rem; }
+@media (min-width: 860px) { .twin-grid { grid-template-columns: 1fr 1fr; } }
+.twin-grid > div { min-width: 0; }
+.twin-grid .marginal { margin-bottom: 0.5rem; }
+.twin-grid pre { margin-top: 0.5rem; }
+
+/* --- the life of one purchase, drawn as a dimension chain: one hairline run
+   down the sheet, a tick at every station, the time read off in the margin. */
+
+.chain-head { margin-bottom: 1.4rem; font-size: 1.05rem; }
+
+.chain {
+  position: relative;
+  list-style: none;
+}
+
+.chain li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 3.6rem 1.2rem minmax(0, 1fr);
+  align-items: start;
+  gap: 0 0.8rem;
+  padding-block: 1rem;
+}
+
+@media (min-width: 640px) {
+  .chain li { grid-template-columns: 5rem 1.2rem minmax(0, 1fr); gap: 0 1.2rem; }
+}
+
+/* The run itself. It is drawn on the ticks column rather than as a border on
+   the row, so it is continuous through the gaps the way a chain is. */
+.chain li::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(3.6rem + 0.8rem + 0.6rem);
+  width: 1px;
+  background: var(--hair-red);
+  content: "";
+}
+
+@media (min-width: 640px) { .chain li::before { left: calc(5rem + 1.2rem + 0.6rem); } }
+
+.chain li:first-child::before { top: 1.55rem; }
+.chain li:last-child::before { bottom: auto; height: 1.55rem; }
+
+.chain__at {
+  padding-top: 0.95rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--color-muted);
+}
+
+/* A tick across the run, which is how a dimension chain marks a station. A
+   filled circle would be a product timeline. */
+.chain__tick {
+  position: relative;
+  z-index: 1;
+  margin-top: 1.45rem;
+  width: 0.75rem;
+  height: 0;
+  border-top: 1px solid var(--color-blue);
+  justify-self: center;
+}
+
+.chain__body {
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--hair);
+}
+
+.chain li:last-child .chain__body { border-bottom: 0; }
+
+.chain__what { font-weight: 700; }
+.chain__why { margin-top: 0.2rem; font-size: 0.9rem; line-height: 1.5; color: var(--color-muted); }
+
+.chain__amount {
+  display: inline-block;
+  margin-top: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-blue);
+}
+
+/* --- tables. A schedule on a drawing: hairline rules, no fills, and the head
+   set in the mono the rest of the measurements use. */
+
+.table-scroll { overflow-x: auto; }
+
+.sheet-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+
+/* The 900 px floor is a readable canvas, not a preference: below it the
+   provider and rule headers break inside a word. */
+.sheet-table.is-wide { min-width: 900px; }
+
+.sheet-table th {
+  padding: 0.5rem 0.6rem 0.5rem 0;
+  border-bottom: 1px solid var(--hair);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-align: left;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.sheet-table td {
+  padding: 0.6rem 0.6rem 0.6rem 0;
+  border-bottom: 1px solid var(--hair);
+  vertical-align: top;
+}
+
+.sheet-table td.is-num,
+.sheet-table code {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sheet-table code { font-size: 0.8rem; color: var(--color-blue-ink); }
+.sheet-table .is-faint { font-size: 0.78rem; color: var(--color-muted); }
+.sheet-table td strong { display: block; }
+.sheet-table td code.is-faint { display: block; margin-top: 0.15rem; color: var(--color-muted); }
+
+.tag {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+}
+
+.tag.is-allow { color: var(--color-allow); }
+.tag.is-hold { color: var(--color-hold); }
+.tag.is-block { color: var(--color-block); }
+
+/* --- the four headline figures. Same number language as the landing page's
+   gate-off readings, so a figure means the same thing on both halves. */
+
+.figures { display: grid; gap: 1.8rem 2.4rem; }
+@media (min-width: 560px) { .figures { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 1100px) { .figures { grid-template-columns: repeat(4, 1fr); } }
+
+.figure { padding-top: 1rem; border-top: 1px solid var(--hair); }
+
+.figure__value {
+  font-family: var(--font-mono);
+  font-size: clamp(1.9rem, 5vw, 2.7rem);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--color-blue);
+}
+
+.figure__value.text-allow { color: var(--color-allow); }
+.figure__value.text-hold { color: var(--color-hold); }
+.figure__value.text-block { color: var(--color-block); }
+
+.figure__label {
+  margin-top: 0.7rem;
+  max-width: 22ch;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--color-muted);
+}
+
+.limits { display: grid; gap: 1.4rem; }
+@media (min-width: 700px) { .limits { grid-template-columns: repeat(3, 1fr); } }
+.limits article { padding-top: 1rem; border-top: 1px solid var(--hair); }
+.limits article p { margin-top: 0.6rem; font-size: 0.93rem; line-height: 1.6; color: var(--color-muted); }
+
+/* --- the arrangement. Three sources enter one boundary, one decision happens
+   inside it, three outcomes leave, and every one writes to the chain. Drawn in
+   hairlines: the version this replaces was nested CSS boxes with a chamfered
+   clip-path, which is a diagram made of chrome. */
+
+.arrangement {
+  margin-block: 1.5rem 2rem;
+  padding: 1.6rem;
+  border: 1px solid var(--hair);
+  background: var(--color-paper-2);
+}
+
+.arrangement figcaption {
+  margin-bottom: 1.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.arrangement__rank { display: grid; gap: 0.8rem; }
+@media (min-width: 760px) { .arrangement__rank { grid-template-columns: repeat(3, 1fr); } }
+
+.arrangement__cell {
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--hair);
+  background: var(--color-paper);
+}
+
+.arrangement__cell b { display: block; font-size: 0.92rem; }
+.arrangement__cell span {
+  display: block;
+  margin-top: 0.3rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--color-muted);
+}
+
+.arrangement__cell.is-allow b { color: var(--color-allow); }
+.arrangement__cell.is-hold b { color: var(--color-hold); }
+.arrangement__cell.is-block b { color: var(--color-block); }
+
+.arrangement__cell.is-allow b,
+.arrangement__cell.is-hold b,
+.arrangement__cell.is-block b {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+}
+
+/* The runs between the ranks. Stretched to the container width, so the three
+   lines always land on the three cells however the grid resolves. */
+.arrangement__join {
+  display: block;
+  width: 100%;
+  height: 2.4rem;
+  color: var(--hair-red);
+}
+
+@media (max-width: 759px) { .arrangement__join { height: 1.4rem; } }
+
+/* The boundary is the whole claim, so it is the one thing here the accent is
+   spent on. */
+.arrangement__gate { border: 1px solid var(--color-blue); background: var(--color-paper); }
+
+.arrangement__gate-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.8rem;
+  padding: 0.8rem 0.9rem;
+  border-bottom: 1px solid var(--hair);
+}
+
+.arrangement__gate-head b { font-family: var(--font-mono); font-size: 0.9rem; color: var(--color-blue); }
+.arrangement__gate-head span { font-size: 0.78rem; color: var(--color-muted); }
+
+.arrangement__gate-core { display: grid; }
+@media (min-width: 760px) { .arrangement__gate-core { grid-template-columns: repeat(3, 1fr); } }
+
+.arrangement__gate-core > div { padding: 0.8rem 0.9rem; border-top: 1px solid var(--hair); }
+@media (min-width: 760px) {
+  .arrangement__gate-core > div { border-top: 0; }
+  .arrangement__gate-core > div + div { border-left: 1px solid var(--hair); }
+}
+
+.arrangement__gate-core b { font-size: 0.88rem; }
+.arrangement__gate-core p { margin-top: 0.3rem; font-size: 0.78rem; line-height: 1.45; color: var(--color-muted); }
+
+.arrangement__audit {
+  margin-top: 0.8rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px dashed var(--hair);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-align: center;
+  color: var(--color-muted);
+}
+
+/* Committed source, set as source: a block of paper with a hairline round it,
+   never a dark terminal card borrowed from somewhere else. */
+pre {
+  overflow: auto;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--hair);
+  background: var(--color-paper-2);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+/* The sheet states its own origin and status, the way a drawing's title block
+   does. It is on every page because the page a visitor lands on is not
+   something this site chooses. */
+.disclaimer {
+  margin-top: 1.6rem;
+  max-width: 70ch;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  letter-spacing: 0.01em;
+  color: var(--color-muted);
+}
+
+.site-footer { flex-direction: column; gap: 1.2rem; }
+
+.site-footer__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 2rem;
+}
+
+/* The footer row is mono because it is a row of labels; this is a sentence, so
+   it inherits neither the face nor the tracking. Mono standing in for prose is
+   a costume. */
+.site-footer .disclaimer {
+  margin-top: 0;
+  max-width: 62ch;
+  font-family: var(--font-sans);
+  letter-spacing: normal;
+  text-align: center;
+  text-wrap: balance;
+}
+
+.chip-note {
+  margin-top: 0.6rem;
+  max-width: 46ch;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--color-muted);
+}
+
+
+/* ---------------------------------------------------------- the terminal pane
+   The one surface on this site that is not cream paper: a high-contrast dark
+   terminal, quoted into the drawing the way a photograph is pasted onto a
+   sheet. It keeps the sheet's geometry - square corners, one hairline frame,
+   the same mono - and changes only its ground, so it reads as a different
+   medium rather than as a different design.
+
+   The body colour is the page's own paper on near-black, which is what ties the
+   two together: the same cream, inverted. Every token was then measured against
+   the ground rather than picked by eye, and the numbers are the measurement.
+   A syntax theme that fails contrast is decoration, and this block exists to be
+   read and typed. */
+
+:root {
+  --code-bg: #0a0a0a;
+  --code-gutter: #0a0a0a;
+  --code-line: #2e2e2c;
+  --code-fg: #f0f0ee;      /* 17.35:1 - the page's paper, inverted */
+  --code-dim: #808079;     /*  4.98:1 - the prompt */
+  --code-cmd: #ffc84d;     /* 12.84:1 - the program being run */
+  --code-flag: #6fd2ff;    /* 11.63:1 - options */
+  --code-url: #7fe58f;     /* 12.73:1 - urls and quoted strings */
+  --code-op: #ff8494;      /*  8.47:1 - shell operators, the world's red, lifted */
+  --code-path: #d9b3ff;    /* 11.16:1 - files and directories */
+}
+
+/* The one rounded thing on the site, and it is rounded for the same reason it
+   is dark: a terminal is a window quoted onto the sheet, and a window has a
+   radius. Everything that is part of the drawing itself stays square. */
+.code {
+  overflow: hidden;
+  border: 1px solid var(--code-line);
+  border-radius: 10px;
+  background: var(--code-bg);
+}
+
+.code pre {
+  overflow-x: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.75;
+  color: var(--code-fg);
+  /* The gutter is drawn as a column of the panel rather than per line, so it
+     stays put when a long command scrolls sideways under it. */
+  tab-size: 2;
+}
+
+.code__line { display: flex; }
+
+.code__line:first-child { padding-top: 0.7rem; }
+.code__line:last-child { padding-bottom: 0.7rem; }
+
+.code__no {
+  position: sticky;
+  left: 0;
+  flex: none;
+  width: 2.2rem;
+  padding-right: 0.8rem;
+  background: var(--code-gutter);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--code-dim);
+  user-select: none;
+}
+
+.code__text { padding-right: 1.2rem; padding-left: 0.9rem; white-space: pre; }
+
+/* The caret sits after the last command, where a shell would leave it waiting.
+   It is drawn with an inline-block rather than a border so it keeps the cell
+   width of the mono face and lines up with the characters above it. */
+.code__line:last-child .code__text::after {
+  display: inline-block;
+  width: 0.55em;
+  height: 1.05em;
+  margin-left: 0.15em;
+  background: var(--code-fg);
+  vertical-align: -0.19em;
+  animation: caret 1.06s steps(1, end) infinite;
+  content: "";
+}
+
+@keyframes caret { 50% { opacity: 0; } }
+
+/* A caret that stops blinking is still a caret; one that disappears reads as a
+   rendering fault, so reduced motion holds it on rather than removing it. */
+@media (prefers-reduced-motion: reduce) {
+  .code__line:last-child .code__text::after { animation: none; }
+}
+
+.t-cmd { color: var(--code-cmd); font-weight: 500; }
+.t-flag { color: var(--code-flag); }
+.t-url, .t-str { color: var(--code-url); }
+.t-op { color: var(--code-op); }
+.t-path { color: var(--code-path); }
+
+/* Selecting a command to copy it is the whole point of the block, so the
+   selection is themed for the dark ground rather than inheriting the page's,
+   which is crimson on cream and unreadable here. */
+.code ::selection { background: #35424d; color: #ffffff; }
+
+/* A prompt pasted into a shell does not run, so the gutter is unselectable
+   above and gone in print. The markup hides it from assistive tech too. */
+@media print { .code__no { display: none; } }
+
+
+/* ---------------------------------------------------------------------------
+   The Night Circuit skin - the site's world since 2 Sept 2026.
+
+   Built 2 Sept so Sumeet could see the site wearing the palette and type of
+   landonorris.com; adopted as the default the same day, on his answer. All seven
+   shells in web/ carry `<html data-skin="night">`, so this block is what a
+   visitor sees and the :root tokens below it are the fallback rather than the
+   design. The Orbit Sheet is still whole and is one attribute away: delete
+   data-skin from the shells and it comes back.
+
+   Measured off the reference at 1440x900 rather than read out of its minified
+   stylesheet: body ground rgb(40,44,32), body text rgb(244,244,237), largest
+   painted ground rgb(17,17,18), and the headline set in Mona Sans 700 - not in
+   the display face, which is why nothing here needs it.
+
+   Two things are deliberately not taken. The reference's commercial display face
+   is a licensed brand asset and is not in this repo at any size. Its WebGL scene
+   is not reproduced either; our gate keeps its own geometry and shader and only
+   reads the tokens below, which is what makes the whole swap one attribute.
+
+   Mona Sans is GitHub's, under the SIL Open Font License, self-hosted from its
+   own package rather than copied from the reference's CDN. Barlow, already here
+   for the drawing keys, is under the same licence and the reference uses it too.
+   --------------------------------------------------------------------------- */
+
+[data-skin="night"] {
+  --color-paper: #111112;
+  --color-paper-2: #282c20;
+  --color-ink: #f4f4ed;
+  --color-blue: #d2ff00;
+  --color-blue-ink: #b2c73a;
+  --color-orange: #ff6b00;
+  --color-allow: #d2ff00;
+  --color-block: #ff6b00;
+  --color-hold: #e4c96a;
+  --color-muted: #b4b8a5;
+  --color-rule: rgba(244, 244, 237, 0.20);
+  --hair: rgba(244, 244, 237, 0.24);
+  /* Ink at 5.5% on an ink ground is exactly invisible - measured at ratio 1.00
+     on the hero, which is the whole reason this line exists. */
+  --ghost: rgba(244, 244, 237, 0.075);
+
+  /* The lift is a second hairline, so it inverts with the ground or it stops
+     being visible at all. */
+  --shadow-lift: 0 0 0 1px rgba(244, 244, 237, 0.12),
+                 3px 3px 0 0 rgba(244, 244, 237, 0.07);
+
+  /* Mona Sans is the body voice here, taken from the reference. The display
+     tokens are deliberately NOT overridden: Sumeet named Cormorant 500 as the
+     site's display face on 2 Sept and his standing font rule makes that
+     site-wide, so both skins inherit it from :root rather than each keeping a
+     copy. The reference sets its own headline in its body sans; ours does not. */
+  --font-sans: "Mona Sans", "Segoe UI", system-ui, sans-serif;
+}
+
+/* Tracking only. The weight override this block used to carry was written for a
+   sans display face and is gone: one Cormorant weight ships and
+   font-synthesis-weight is off, so asking for 700 changed nothing that could be
+   seen and said something false about the face. A light serif on a dark ground
+   needs a fraction more air between letters, not less. */
+[data-skin="night"] .hero-title,
+[data-skin="night"] .title-block h1,
+[data-skin="night"] .beat-body h2,
+[data-skin="night"] .plate-head h2,
+[data-skin="night"] .landing-close h2,
+[data-skin="night"] .plate-row > header h2,
+[data-skin="night"] .ots-proof-slot h2,
+[data-skin="night"] .verdict-key,
+[data-skin="night"] .reading dd,
+[data-skin="night"] .brand {
+  letter-spacing: 0.004em;
+}
+
+/* Ink-coloured dots are invisible on an ink ground; the tooth has to invert with
+   the paper or the sheet goes flat. */
+[data-skin="night"] body::before {
+  background-image:
+    radial-gradient(rgba(244, 244, 237, 0.030) 0.5px, transparent 0.5px),
+    radial-gradient(rgba(244, 244, 237, 0.018) 0.5px, transparent 0.5px);
+}
+
+/* The pending hatch is the third hardcoded ink value with no token behind it. */
+[data-skin="night"] .pending {
+  background: repeating-linear-gradient(
+    -45deg, transparent 0 7px, rgba(244, 244, 237, 0.05) 7px 14px);
+}
+
+/* --- Night Circuit motion ------------------------------------------------ */
+
+/* Lenis drives the scroll position itself, and scroll-snap fights it: the snap
+   re-targets mid-lerp and the page judders on every band boundary. */
+html[data-skin="night"] { scroll-snap-type: none; }
+
+/* The reference enters a section as a stagger down its children rather than as
+   one block, and travels further than the sheet's single settle does. The Orbit
+   Sheet's own entrance is untouched - this is additive and skin-scoped. */
+[data-skin="night"].js-reveal .reveal {
+  transform: translate3d(0, 34px, 0);
+}
+
+/* This settle has to be written for the skin as well, and leaving it out was a
+   defect rather than an omission. `.js-reveal .reveal.is-in` and the rule above
+   are both three selectors of specificity, so the later one won and every
+   revealed section stayed 34px below its own box for good: a section's bottom
+   border drew inside its neighbour, and the C-D rule on the landing page went
+   missing because of it. Found 3 Sept 2026 by measuring section tops against
+   section bottoms and getting a negative gap. */
+[data-skin="night"].js-reveal .reveal.is-in {
+  transform: none;
+}
+
+[data-skin="night"].js-reveal .reveal.is-in > * {
+  animation: skin-rise var(--motion-surface) var(--ease-refract) backwards;
+}
+
+[data-skin="night"].js-reveal .reveal.is-in > *:nth-child(2) { animation-delay: 70ms; }
+[data-skin="night"].js-reveal .reveal.is-in > *:nth-child(3) { animation-delay: 140ms; }
+[data-skin="night"].js-reveal .reveal.is-in > *:nth-child(4) { animation-delay: 210ms; }
+[data-skin="night"].js-reveal .reveal.is-in > *:nth-child(n+5) { animation-delay: 280ms; }
+
+@keyframes skin-rise {
+  from { opacity: 0; transform: translate3d(0, 20px, 0); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* The stagger is decoration on top of a reveal that has already happened, so it
+   comes off whole rather than being shortened. */
+@media (prefers-reduced-motion: reduce) {
+  [data-skin="night"].js-reveal .reveal { transform: none; }
+  [data-skin="night"].js-reveal .reveal.is-in > * { animation: none; }
+}
+
+/* The roll. Measured on landonorris.com's clone 2 Sept 2026 (Playwright,
+   1440x900): a control's label is split into inline-block spans inside a box
+   clipped to exactly one line height; on hover each letter runs y 0 -> -100%
+   while a second copy of the same letter rides up from +100%. The letters
+   departed 6, 20 and 46 ms apart at the pointer and settled by about 550 ms on
+   a hard deceleration, so 18 ms and 520 ms are the numbers used here.
+
+   The second copy is a ::before with content: attr(data-c) rather than a second
+   run of markup, so the swap costs one element per letter instead of two and no
+   assistive technology can reach the duplicate. */
+.roll {
+  position: relative;
+  display: inline-block;
+  vertical-align: bottom;
+}
+
+/* The real word, carried once and unsplit. A split label read letter by letter
+   is what an unguarded per-character effect does to a screen reader. */
+.roll__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.roll__split {
+  display: block;
+  overflow: clip;
+  /* The clip box is one line tall, so a letter at -100% is fully outside it and
+     its incoming copy is fully inside. A box any taller shows both at once. */
+  line-height: 1;
+}
+
+/* The wordmark is the one roll set in the display serif, and Cormorant's glyph
+   box is taller than a 1.0 line box: at 23.2px the face asks for 21px of ascent
+   and 7px of descent against a 23.2px line, so half-leading puts the baseline
+   18.6px down and the g descends 2.4px past the clip. It read as a flat cut
+   under the word. 1.25 clears the 28px the face actually needs. The travel is a
+   percentage of the letter box, so it grows with this and the effect is
+   unchanged. Measured 3 Sept 2026, canvas TextMetrics in page. */
+.brand .roll__split { line-height: 1.25; }
+
+.roll__c { display: inline-block; }
+
+/* The parts of a label that are not text - an arrow, an icon. They sit in the
+   same clipped line and hold their place while the words roll past them. */
+.roll__still { display: inline-block; }
+
+/* The roll only exists on a pointer that can hover, and only above the width
+   where a control's label still fits on one line. Both halves are load-bearing.
+   A phone cannot hover, so the effect is unreachable there and the incoming
+   ::before copy would be pure weight. And the clip box is one line tall by
+   definition, so a label that wraps puts every incoming copy on top of the line
+   below it - measured 2 Sept 2026 at 390px on `Pay ₹100 with a test card` and
+   `Change one character and check`, both 23px tall against an 11.5px line.
+   `hover: hover` alone does not cover it: a desktop window narrowed to 390 both
+   hovers and wraps. */
+@media (hover: hover) and (min-width: 640px) {
+  .roll__c {
+    position: relative;
+    will-change: transform;
+    transition: transform 520ms var(--ease-roll);
+    transition-delay: calc(var(--i) * 18ms);
+  }
+
+  .roll__c::before {
+    content: attr(data-c);
+    position: absolute;
+    inset: 0;
+    transform: translateY(100%);
+  }
+
+  a:hover .roll__c,
+  button:hover .roll__c,
+  a:focus-visible .roll__c,
+  button:focus-visible .roll__c {
+    transform: translateY(-100%);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .roll__c { transition: none; }
+    a:hover .roll__c,
+    button:hover .roll__c,
+    a:focus-visible .roll__c,
+    button:focus-visible .roll__c { transform: none; }
+  }
+}

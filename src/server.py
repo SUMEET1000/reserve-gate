@@ -12,16 +12,19 @@ lives in ledger.py, so a refusal can be explained without reading the transport.
 import argparse
 import functools
 import os
+import re
 import secrets
 from dataclasses import replace
 from typing import Any
 
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.responses import JSONResponse
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from dotenv import load_dotenv
 
-from . import audit, ledger
+from . import audit, dashboard, ledger
 from .policy import HOLD, Call, load_config
 from .upstream import UpstreamError, call_razorpay
 from .webhook import handle as handle_webhook
@@ -29,6 +32,13 @@ from .webhook import handle as handle_webhook
 # Paths the operator uses and the agent must never reach. Checked against
 # RESERVE_GATE_ADMIN_TOKEN, a different secret from the one the agent holds.
 ADMIN_PATHS = ("/approve/", "/revoke/", "/unfreeze/", "/block")
+
+# Routes that need no credential at all: the uptime check, Razorpay's webhook
+# (which authenticates by signature instead), and the read-only demo site.
+# An exact set, never a prefix, so a route becomes public only by being added
+# here. ADMIN_PATHS is consulted first and wins - a public list that accidentally
+# covered /approve would hand the operator's approval gate to the internet.
+OPEN_PATHS = frozenset({"/health", "/webhook"}) | dashboard.PUBLIC_PATHS
 
 # call_id -> (tool, upstream args, Ref). A HOLD parks here until POST /approve.
 # ponytail: in memory, so a restart forgets the pending approvals. The hold
@@ -139,15 +149,16 @@ async def _settle(conn, tool: str, ref: ledger.Ref, args: dict) -> Any:
     return result
 
 
-async def _gated(call: Call, args: dict) -> Any:
+async def _gated(call: Call, args: dict, cfg=None) -> Any:
     """The money path. Decide and hold, then forward, then commit or release."""
     conn = ledger.connect()
     try:
-        ledger.init(conn, config(), caller_id=call.caller_id)
+        cfg = cfg or config()
+        ledger.init(conn, cfg, caller_id=call.caller_id)
         # Full args bind client keys; derived keys ignore unstable free text.
         # Call stays free-text-free so the policy decision cannot read it (B15).
         decision, ref = ledger.authorize(
-            conn, call, config(), receipt=args.get("receipt"), idempotency_args=args)
+            conn, call, cfg, receipt=args.get("receipt"), idempotency_args=args)
 
         if decision.outcome == HOLD:
             _HOLDS[ref.reservation_id] = (call.tool, args, ref)
@@ -205,6 +216,16 @@ async def capture_payment(payment_id: str, amount: int, currency: str = "INR",
     # Razorpay's own reply rather than from an argument means a caller cannot
     # aim a capture at somebody else's order. It is a read, so R6 does not count
     # it, and a failure to resolve it is a refusal rather than a guess.
+    return await _capture_for(caller_id(), payment_id, amount=amount, currency=currency,
+                              idempotency_key=idempotency_key)
+
+
+async def _capture_for(caller: str, payment_id: str, *, amount: int | None = None,
+                       currency: str | None = None, idempotency_key: str | None = None,
+                       cfg=None, expected_order_id: str | None = None) -> Any:
+    """Resolve a payment at Razorpay, then capture it through the shared gate."""
+    if not isinstance(payment_id, str) or not re.fullmatch(r"pay_[A-Za-z0-9]{1,64}", payment_id):
+        raise ValueError("BLOCK [G4] malformed payment id")
     try:
         payment = await call_razorpay("fetch_payment", {"payment_id": payment_id})
         order_id = payment["order_id"]
@@ -213,16 +234,44 @@ async def capture_payment(payment_id: str, amount: int, currency: str = "INR",
         audit.record(event="block", rule="G4", tool="capture_payment",
                      reason=f"could not resolve the order for {payment_id}: {e}")
         raise ValueError(f"BLOCK [G4] cannot resolve the order for {payment_id}: {e}") from None
-    if (type(upstream_amount) is not int or upstream_amount != amount
-            or not isinstance(upstream_currency, str)
-            or upstream_currency.upper() != currency.upper()):
+    if (expected_order_id is not None and order_id != expected_order_id):
+        audit.record(event="block", rule="G2", tool="capture_payment",
+                     reason="payment does not belong to this visitor's live order")
+        raise ValueError("BLOCK [G2] payment does not belong to this checkout")
+    if (type(upstream_amount) is not int or not isinstance(upstream_currency, str)
+            or (amount is not None and upstream_amount != amount)
+            or (currency is not None and upstream_currency.upper() != currency.upper())):
         audit.record(event="block", rule="R0", tool="capture_payment", payment_id=payment_id,
                      reason="capture arguments do not match Razorpay's payment object")
         raise ValueError("BLOCK [R0] capture amount or currency does not match the payment")
-    return await _gated(Call(tool="capture_payment", caller_id=caller_id(), amount=amount,
-                             currency=currency, order_id=order_id, payment_id=payment_id,
-                             idem_key=idempotency_key),
-                        {"payment_id": payment_id, "amount": amount, "currency": currency})
+    call = Call(tool="capture_payment", caller_id=caller, amount=upstream_amount,
+                currency=upstream_currency, order_id=order_id, payment_id=payment_id,
+                idem_key=idempotency_key)
+    return await _gated(call, {"payment_id": payment_id, "amount": upstream_amount,
+                               "currency": upstream_currency}, cfg)
+
+
+def live_checkout_available() -> tuple[bool, str]:
+    key = os.environ.get("RAZORPAY_KEY_ID", "")
+    if not key or not os.environ.get("RAZORPAY_KEY_SECRET"):
+        return False, "Razorpay test credentials are not configured"
+    if not key.startswith("rzp_test_"):
+        return False, "Public checkout only runs with a Razorpay test key"
+    return True, ""
+
+
+async def live_checkout_order(caller: str, cfg) -> dict:
+    amount = 10_000
+    args = {"amount": amount, "currency": "INR", "receipt": "reserve-gate-demo-100"}
+    call = Call(tool="create_order", caller_id=caller, amount=amount, currency="INR",
+                idem_key="public-live-checkout-100")
+    return await _gated(call, args, cfg)
+
+
+async def live_checkout_capture(caller: str, cfg, payment_id: str,
+                                order_id: str) -> dict:
+    return await _capture_for(caller, payment_id, cfg=cfg, expected_order_id=order_id,
+                              idempotency_key="public-live-capture-100")
 
 
 @mcp.tool()
@@ -323,6 +372,28 @@ async def approve(request):
     return JSONResponse({"approved": call_id, "result": result})
 
 
+dashboard.install(mcp, live_available=live_checkout_available,
+                  live_order=live_checkout_order, live_capture=live_checkout_capture)
+
+
+def gzip_dashboard(app):
+    """Compress the demo site only.
+
+    JSON and HTML compress heavily and this is the largest transfer win
+    available without a bundler. It is scoped by path on purpose: /mcp answers
+    over server-sent events, and buffering those to compress them would hold
+    back the incremental delivery the transport is built on.
+    """
+    compressed = GZipMiddleware(app, minimum_size=500)
+
+    async def wrapper(scope, receive, send):
+        if scope["type"] == "http" and scope["path"] in dashboard.PUBLIC_PATHS:
+            return await compressed(scope, receive, send)
+        await app(scope, receive, send)
+
+    return wrapper
+
+
 def bearer_auth(app):
     """Reject every HTTP request that does not present the right credential.
 
@@ -338,8 +409,11 @@ def bearer_auth(app):
         # routing while `scope["path"]` here still carries it, so /unfreeze/{id}
         # would stop matching ADMIN_PATHS and fall through to the agent's own
         # token. Never pass --root-path, or match on the stripped value instead.
-        if scope["type"] == "http" and scope["path"] not in ("/health", "/webhook"):
-            name = ("RESERVE_GATE_ADMIN_TOKEN" if scope["path"].startswith(ADMIN_PATHS)
+        # A lifespan scope carries no path, so the type check has to come first.
+        path = scope.get("path", "")
+        if scope["type"] == "http" and (path.startswith(ADMIN_PATHS)
+                                        or path not in OPEN_PATHS):
+            name = ("RESERVE_GATE_ADMIN_TOKEN" if path.startswith(ADMIN_PATHS)
                     else "RESERVE_GATE_TOKEN")
             expected = os.environ.get(name) or ""
             headers = dict(scope.get("headers") or [])
@@ -347,7 +421,7 @@ def bearer_auth(app):
             # compare_digest keeps the comparison time independent of how many
             # leading characters happen to match.
             if not expected or not secrets.compare_digest(presented, "Bearer " + expected):
-                audit.record(event="auth_reject", path=scope["path"],
+                audit.record(event="auth_reject", path=path,
                              presented=bool(presented), required=name)
                 return await JSONResponse({"error": "unauthorized"}, 401)(scope, receive, send)
             # The proxy forwards upstream with its own Razorpay credential. A
@@ -360,6 +434,9 @@ def bearer_auth(app):
 
 
 def main() -> None:
+    # Render injects environment variables. Local development uses the ignored
+    # .env file, without overriding anything already supplied by the process.
+    load_dotenv(override=False)
     p = argparse.ArgumentParser(prog="reserve-gate")
     p.add_argument("--http", action="store_true",
                    help="serve over HTTP instead of stdio (used by the deployment)")
@@ -378,7 +455,7 @@ def main() -> None:
     import uvicorn
     # 0.0.0.0 is required: Render routes to the container's external interface,
     # and the bearer check above runs in front of every request.
-    uvicorn.run(bearer_auth(mcp.streamable_http_app()),
+    uvicorn.run(bearer_auth(gzip_dashboard(mcp.streamable_http_app())),
                 host="0.0.0.0", port=a.port)  # nosec B104
 
 

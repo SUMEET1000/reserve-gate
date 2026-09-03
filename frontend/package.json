@@ -1,0 +1,21 @@
+{
+  "name": "reserve-gate-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch"
+  },
+  "dependencies": {
+    "lenis": "^1.3.26",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "three": "0.182.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.1.18",
+    "@vitejs/plugin-react": "5.1.0",
+    "tailwindcss": "4.1.18",
+    "vite": "7.2.2"
+  }
+}

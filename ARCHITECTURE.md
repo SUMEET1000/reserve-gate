@@ -13,11 +13,11 @@ AI buyer.
 ## Shape
 
 ```
-  buyer agent (in this repo)              MCP desktop client
-      --scripted | --llm                       |
-              \                                | npx mcp-remote  (stdio -> HTTP)
-               \                               |
-                v                              v
+  buyer agent (in this repo)   MCP desktop client   a judge's browser
+      --scripted | --llm              |             cookie -> own block
+              \                       | npx mcp-remote      /
+               \                      | (stdio -> HTTP)    /  no token
+                v                     v                   v
         +--------------------------------------------------+
         |  reserve-gate                                     |
         |                                                   |
@@ -44,6 +44,9 @@ AI buyer.
         |  capture reconcile -> commit, no-op, or freeze      |
         |                                                   |
         |  every outcome -> one line in audit.jsonl          |
+        |                                                   |
+        |  landing + guided demo + technical proof: no token |
+        |  sandbox local; fixed ₹100 proof is tightly capped |
         +--------------------------------------------------+
                         |
                         |  MCP, Authorization: Basic <key:secret>
@@ -72,7 +75,10 @@ adopting a changed money API would be the wrong default.
 
 | Boundary | Control |
 |---|---|
-| Public internet to the deployed server | Bearer token, constant-time compare. `/health` is open; exact route `/webhook` uses raw-body HMAC authentication. |
+| Public internet to the deployed server | Bearer token, constant-time compare. `/health` is open; exact route `/webhook` uses raw-body HMAC authentication. The demo pages and their JSON API are open too, listed by exact path, and the admin prefixes are matched before that list so a page path cannot widen into `/approve` or `/revoke`. |
+| One demo visitor to another's block | The `caller_id` is derived from an `HttpOnly; SameSite=Lax` cookie server-side, never from a request field. Every lookup keyed by something a caller can name — block, order, idempotency key — is already scoped by caller, so a second visitor changes nothing about that. |
+| Public browser to Razorpay test mode | `POST /api/live-checkout/order` accepts no caller fields and always reserves ₹100 against that visitor's current block. A separate 24-hour cookie and a `BEGIN IMMEDIATE` slot claim enforce one attempt per browser and 20 per UTC day before any upstream call. Only `rzp_test_` keys are accepted. Capture accepts one payment id, resolves its order at Razorpay, matches it to the stored visitor order, then enters the shared capture gate. |
+| Demo visitor to the mutation runner | The mutation is chosen by integer index into a fixed list in `harness/mutate.py`. Caller-supplied source is never compiled. It runs as a subprocess, because scoring a mutation rebinds `ledger.decide` for a whole interpreter: in-process, an unauthenticated request would remove a policy guard from every concurrent decision until the run finished. Each run also redirects the audit path to a throwaway file, so the committed chain is untouched. |
 | Razorpay webhook to money state | HMAC-SHA256 is checked over exact raw bytes before parsing. Event IDs deduplicate atomically with settlement. |
 | Agent to the operator's controls | A second secret. `/approve`, `/revoke`, `/unfreeze` and `/block` take `RESERVE_GATE_ADMIN_TOKEN`; the agent holds only `RESERVE_GATE_TOKEN`. Guarding the approval gate with the token the gated party already carries would let the agent approve its own spending. |
 | Caller to upstream | The caller's `Authorization` header is removed before forwarding. Only the gate's own Razorpay credential ever reaches Razorpay. |

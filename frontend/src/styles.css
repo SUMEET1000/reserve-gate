@@ -2079,15 +2079,86 @@ code,
 .demo-stations [aria-current="step"] a { color: var(--color-ink); }
 .demo-stations [aria-current="step"] .sheet-index__no { color: var(--color-blue); opacity: 1; }
 
-/* The guided walkthrough is an operation, not a reference sheet. At desktop
-   sizes its inputs and results need the full reading width; the sticky station
-   index keeps the journey visible without a second, competing column. */
+/* The five reference sheets carry the guided demo's proportions, 3 Sept 2026.
+   They were drawn with a narrow sticky heading column beside a 0.66fr body at
+   half the demo's type size; measured at 1440x900 their h2 was 32.8px against
+   the demo's 61.2px, which is the size difference Sumeet could see when he
+   compared the two pages.
+
+   Scoped to .sheet, which is Shell's <main> and so covers all five plus the
+   demo. The landing page cannot be reached from here: it renders a bare <main>
+   with no .sheet class and carries no .plate-row at all.
+
+   This block is deliberately placed BEFORE the .demo-sheet block below and
+   never merged into it. The two carry equal specificity, so the later one wins
+   and the demo keeps every value it already had - the page being copied from
+   does not move while it is being copied.
+
+   Scope correction, same day: this block first carried the demo's control and
+   panel sizes too - a 4rem button, 2.4rem .reading padding, 1.08rem body. On a
+   reference sheet those read oversized, and the in-page button stood 64px
+   against the header's own 44px .btn, which is the mismatch Sumeet reported
+   from /evidence. Controls and panels are back on the base scale, so a button
+   in the sheet and a button in the header are one size. What stays is the part
+   he asked for: the heading, the reading measure, and the single content-led
+   column. */
 @media (min-width: 1024px) {
-  .demo-title-block h1 {
+  .sheet .plate-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.8rem;
+    padding-block: 3.6rem 4rem;
+    scroll-margin-top: calc(var(--header-h) + 3.75rem);
+  }
+
+  /* The heading leads the row instead of tracking it. A sticky column earns its
+     keep beside a long body; at this size the heading is the row's opening
+     line, and holding it in a 220px gutter is what made the sheets read
+     concentrated. */
+  .sheet .plate-row > header { position: static; }
+
+  /* The page title has to outrank the section titles under it. At 1440 it set
+     58.4px against a 61.2px section h2, so each sheet's own name was the
+     smallest display type on its page - reported as the heading being
+     overshadowed by its sections. This is the guided demo's ratio, which was
+     already right: 80px title over a 61.2px section at 1440, and 80 over 68 at
+     1920. .title-block is Shell's, outside <main class="sheet">, so it is
+     targeted directly; the landing page renders no .title-block and cannot be
+     reached from here. /demo carries both classes and reads this same rule,
+     which is why the .demo-title-block copy of these values is gone - one
+     value, one place. */
+  .title-block h1 {
     max-width: 18ch;
     font-size: clamp(3.25rem, 5.6vw, 5rem);
   }
 
+  .sheet .plate-row > header h2 {
+    max-width: 28ch;
+    font-size: clamp(2.8rem, 4.25vw, 4.25rem);
+  }
+
+  .sheet .plate-row__intro {
+    max-width: 58ch;
+    font-size: 1.25rem;
+    line-height: 1.7;
+  }
+
+  /* A modest lift on the input itself, and nothing else on the control scale.
+     .field.is-narrow sets a 7rem amount box on /attack, so width is never set
+     here: a shared width would tie with it and win on source order. */
+  .sheet .field input,
+  .sheet .field textarea { min-height: 3rem; padding: 0.6rem 0.8rem; font-size: 1rem; }
+
+  /* A textarea is not one of the demo's fields. Those are money inputs in 396px
+     grid columns; .field textarea is width:100%, so a shared size set an
+     85-character payload across 1628px and towered over the button under it.
+     It takes a reading measure instead of the row's whole width. */
+  .sheet .field textarea { max-width: 68ch; }
+}
+
+/* The guided walkthrough is an operation, not a reference sheet. At desktop
+   sizes its inputs and results need the full reading width; the sticky station
+   index keeps the journey visible without a second, competing column. */
+@media (min-width: 1024px) {
   .demo-sheet .plate-row {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(14rem, 0.85fr) minmax(0, 1.15fr);
@@ -2853,14 +2924,6 @@ html[data-skin="night"] { scroll-snap-type: none; }
   line-height: 1;
 }
 
-/* The wordmark is the one roll set in the display serif, and Cormorant's glyph
-   box is taller than a 1.0 line box: at 23.2px the face asks for 21px of ascent
-   and 7px of descent against a 23.2px line, so half-leading puts the baseline
-   18.6px down and the g descends 2.4px past the clip. It read as a flat cut
-   under the word. 1.25 clears the 28px the face actually needs. The travel is a
-   percentage of the letter box, so it grows with this and the effect is
-   unchanged. Measured 3 Sept 2026, canvas TextMetrics in page. */
-.brand .roll__split { line-height: 1.25; }
 
 .roll__c { display: inline-block; }
 

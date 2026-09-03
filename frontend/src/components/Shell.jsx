@@ -30,7 +30,7 @@ export function Brand({ className = '' }) {
         <path d="m12 1 1 32M2 7l11 6 9-6M3 27l10-6 9 6" fill="none"
               stroke="currentColor" strokeWidth="1" opacity=".8" />
       </svg>
-      <span><Roll>reserve-gate</Roll></span>
+      <span>reserve-gate</span>
     </a>
   );
 }

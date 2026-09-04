@@ -1,9 +1,26 @@
-import { Suspense, lazy } from 'react';
+import { Component, Suspense, lazy } from 'react';
 import { Brand, Button, Roll, SiteFooter, SiteHeader } from '../components/Shell.jsx';
 
 // three.js is 590 KB of the bundle and only this page draws with it, so it
 // loads as its own chunk (web/app-hero.js) rather than on all six pages.
 const HeroScene = lazy(() => import('../components/HeroScene.jsx'));
+
+class HeroErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch() {}
+  render() {
+    if (this.state.hasError) {
+      return this.props.fallback;
+    }
+    return this.props.children;
+  }
+}
 
 // The Orbit Sheet. Every section is a plate on one drawing: a numbered rule
 // across the top, the content set against it, and measurement in the margin.
@@ -101,9 +118,27 @@ export default function Landing() {
               can be seen to bend the same lines the sheet is drawn with. */}
           {/* No fallback: the canvas is the section's background, and the
               text over it is readable before the rings arrive. */}
-          <Suspense fallback={null}>
-            <HeroScene className="absolute inset-0 h-full w-full" />
-          </Suspense>
+          <HeroErrorBoundary
+            fallback={
+              <div
+                className="absolute inset-0 h-full w-full"
+                style={{ background: 'var(--color-paper, #111112)' }}
+                aria-hidden="true"
+              />
+            }
+          >
+            <Suspense
+              fallback={
+                <div
+                  className="absolute inset-0 h-full w-full"
+                  style={{ background: 'var(--color-paper, #111112)' }}
+                  aria-hidden="true"
+                />
+              }
+            >
+              <HeroScene className="absolute inset-0 h-full w-full" />
+            </Suspense>
+          </HeroErrorBoundary>
 
           <svg
             aria-hidden="true"

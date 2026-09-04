@@ -81,19 +81,19 @@
 }
 
 @theme {
-  --color-paper: #f0f0ee;
-  --color-paper-2: #f7f6f3;
-  --color-ink: #111111;
+  --color-paper: #111112;
+  --color-paper-2: #1f211d;
+  --color-ink: #f4f4ed;
   /* Named --color-blue because six pages and a hundred utility classes already
      say text-blue; the value is the sheet's crimson and nothing here is blue. */
-  --color-blue: #900020;
-  --color-blue-ink: #6b0018;
-  --color-orange: #900020;
-  --color-allow: #1f5c3d;
-  --color-block: #900020;
-  --color-hold: #78591f;
-  --color-muted: #6d6a64;
-  --color-rule: rgba(17, 17, 17, 0.18);
+  --color-blue: #d2ff00;
+  --color-blue-ink: #b2c73a;
+  --color-orange: #ff6b00;
+  --color-allow: #d2ff00;
+  --color-block: #ff6b00;
+  --color-hold: #e4c96a;
+  --color-muted: #b4b8a5;
+  --color-rule: rgba(244, 244, 237, 0.20);
 
   --font-sans: "Mona Sans", "Segoe UI", system-ui, sans-serif;
   --font-mono: "Azeret Mono", "Cascadia Mono", ui-monospace, monospace;
@@ -104,14 +104,14 @@
 
   /* A drawing has no drop shadows. What lifts a panel here is a second hairline
      offset from the first, which is how a drafting sheet shows a raised plate. */
-  --shadow-lift: 0 0 0 1px rgba(17, 17, 17, 0.16),
-    3px 3px 0 0 rgba(17, 17, 17, 0.16),
-    3px 5px 10px rgba(17, 17, 17, 0.12);
+  --shadow-lift: 0 0 0 1px rgba(244, 244, 237, 0.22),
+    3px 3px 0 0 rgba(244, 244, 237, 0.20),
+    3px 5px 12px rgba(0, 0, 0, 0.45);
 }
 
 :root {
-  --crystal-edge: rgba(144, 0, 32, 0.28);
-  --crystal-white: rgba(247, 246, 243, 0.94);
+  --crystal-edge: rgba(210, 255, 0, 0.28);
+  --crystal-white: rgba(244, 244, 237, 0.94);
   --ease-refract: cubic-bezier(0.16, 1, 0.3, 1);
   /* The roll's deceleration. The reference's own letter curve reached 90% of
      its travel in the first third of its run and crawled the rest; this is
@@ -121,11 +121,11 @@
   --motion-surface: 420ms;
   --motion-settle: 850ms;
 
-  --ghost: rgba(17, 17, 17, 0.055);
+  --ghost: rgba(244, 244, 237, 0.075);
   /* the under-layer of unreadable body text */
-  --hair: rgba(17, 17, 17, 0.22);
+  --hair: rgba(244, 244, 237, 0.24);
   /* every sheet rule on the page */
-  --hair-red: rgba(144, 0, 32, 0.42);
+  --hair-red: #ff0000;
   /* orbit rings and dimension chains only */
   --sheet-inset: clamp(0.9rem, 2.2vw, 2.4rem);
   /* The margin track that holds A, B, C and D. Every keyed row on the page reads
@@ -558,17 +558,6 @@ code,
   }
 }
 
-@media (max-width: 639px) {
-  body[data-page="landing"] #proof>div>div {
-    border-right: 0 !important;
-    border-bottom: 1px solid var(--color-rule) !important;
-  }
-
-  body[data-page="landing"] #proof>div>div:last-child {
-    border-bottom: 0 !important;
-  }
-}
-
 /* ---------------------------------------------------------------- the sheet
 
    The landing page, rebuilt 1 Sept 2026. The route strip, the three verdict
@@ -602,6 +591,7 @@ code,
 }
 
 .landing-hero {
+  background: var(--color-paper, #111112);
   cursor: crosshair;
 }
 
@@ -816,6 +806,72 @@ code,
   .sheet-note[data-at='bl'],
   .sheet-note[data-at='br'] {
     max-width: calc(50% - var(--sheet-inset) - 3.4rem - 0.75rem);
+  }
+}
+
+@media (max-width: 639px) {
+  .sheet-note {
+    font-size: 0.62rem;
+    letter-spacing: 0.10em;
+  }
+
+  .sheet-note[data-at='tl'] {
+    top: 0.85rem;
+    left: 1.25rem;
+  }
+
+  .sheet-note[data-at='tr'] {
+    top: 0.85rem;
+    right: 1.25rem;
+  }
+
+  .sheet-note[data-at='bl'] {
+    bottom: 0.85rem;
+    left: 1.25rem;
+    max-width: calc(50% - 1.5rem);
+  }
+
+  .sheet-note[data-at='br'] {
+    bottom: 0.85rem;
+    right: 1.25rem;
+    max-width: calc(50% - 1.5rem);
+  }
+
+  .hero-grid {
+    padding: 3.25rem 1.25rem 2rem 1.25rem;
+    gap: 1.25rem;
+  }
+
+  .hero-copy {
+    margin-top: 0;
+  }
+
+  .hero-title {
+    font-size: clamp(2.15rem, 8.8vw, 2.65rem);
+    line-height: 1.08;
+  }
+
+  .hero-lede {
+    margin-top: 1.15rem;
+    font-size: 0.98rem;
+    line-height: 1.55;
+    max-width: 38ch;
+  }
+
+  .landing-hero .mt-10 {
+    margin-top: 1.5rem !important;
+  }
+
+  .landing-hero .btn {
+    width: 100%;
+    justify-content: center;
+    padding-block: 0.85rem;
+    font-size: 0.88rem;
+    min-height: 48px;
+  }
+
+  .hero-void {
+    height: 300px;
   }
 }
 
@@ -1412,6 +1468,12 @@ code,
   letter-spacing: -0.02em;
   color: var(--color-ink);
   text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.brand span {
+  white-space: nowrap;
 }
 
 .brand-mark {
@@ -1449,15 +1511,15 @@ code,
    ramp tops out at 425px, so the header is byte-identical at and above 430px, where
    free space is already 43.1px. */
 .brand {
-  font-size: clamp(1.3rem, 0.04rem + 5.70vw, 1.6rem);
+  font-size: clamp(1.18rem, 0.04rem + 5.70vw, 1.6rem);
 }
 
 .site-header .btn {
-  padding-inline: clamp(0.72rem, -1.048rem + 8.838vw, 1.3rem);
-  font-size: clamp(0.6rem, 0.234rem + 1.829vw, 0.72rem);
-  /* In rem, not em: the em would be measured against the clamped font-size above and
-     shrink twice. The maximum equals 0.16em at 0.72rem exactly. */
-  letter-spacing: clamp(0.06rem, -0.108rem + 0.841vw, 0.1152rem);
+  white-space: nowrap;
+  flex-shrink: 0;
+  padding-inline: clamp(0.65rem, -0.8rem + 6.5vw, 1.3rem);
+  font-size: clamp(0.58rem, 0.234rem + 1.5vw, 0.72rem);
+  letter-spacing: clamp(0.05rem, -0.05rem + 0.6vw, 0.1152rem);
 }
 
 .site-nav {
@@ -1469,6 +1531,33 @@ code,
 @media (min-width: 640px) {
   .site-nav {
     gap: 2.4rem;
+  }
+}
+
+@media (max-width: 639px) {
+  .site-header {
+    gap: 0.6rem;
+    padding-inline: 1rem;
+  }
+
+  .brand {
+    gap: 0.45rem;
+  }
+
+  .brand-mark {
+    width: 1.05rem;
+    height: 1.45rem;
+  }
+
+  /* Hide header nav links on mobile so the wordmark and primary CTA never get crushed */
+  .max-sm\:hidden,
+  .site-header .nav-link {
+    display: none !important;
+  }
+
+  .site-nav {
+    gap: 0.5rem;
+    flex-shrink: 0;
   }
 }
 
@@ -3518,27 +3607,45 @@ code,
 
 .onward a {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.3rem 1.2rem;
-  padding: 1rem 0.4rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  padding: 1.15rem 0.5rem;
   color: var(--color-ink);
   text-decoration: none;
+  transition: background var(--motion-control) ease, color var(--motion-control) ease;
 }
 
 .onward a:hover {
   background: var(--color-paper-2);
+}
+
+.onward a:hover .onward__title {
   color: var(--color-blue);
 }
 
 .onward__title {
   font-weight: 700;
-  font-size: 1.02rem;
+  font-size: 1.08rem;
+  line-height: 1.25;
+  color: var(--color-ink);
+  transition: color var(--motion-control) ease;
 }
 
 .onward__hint {
   font-size: 0.88rem;
+  line-height: 1.4;
   color: var(--color-muted);
+}
+
+@media (min-width: 640px) {
+  .onward a {
+    display: grid;
+    grid-template-columns: 14rem 1fr;
+    align-items: baseline;
+    gap: 1.5rem;
+    padding: 1.1rem 0.6rem;
+  }
 }
 
 /* --- the twin test. Two readings of one purchase, side by side, so the only
@@ -4622,5 +4729,325 @@ body[data-page="landing"][data-skin="night"].js-reveal .reveal.is-in>*:nth-child
     button:focus-visible .roll__c {
       transform: none;
     }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Transition Suite: Shutter (Backup) + 3 New Minimalist Transitions
+   Mode 00: Shutter (Horizontal split blades & center hairline seam)
+   Mode 01: Dual Curtain (Vertical lateral panels meeting at center axis)
+   Mode 02: Horizon Wipe (Fluid unidirectional laser scanline sweep)
+   Mode 03: Ethereal Blur (Zero-overlay optical focus & coordinate drift)
+   --------------------------------------------------------------------------- */
+
+.trans-content {
+  position: relative;
+  width: 100%;
+  min-height: 100vh;
+  will-change: transform, opacity, filter;
+  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1), opacity 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* 00: Shutter Content */
+.trans-content--shutter.trans-content--closing {
+  transform: scale(0.992);
+  opacity: 0.92;
+}
+.trans-content--shutter.trans-content--opening {
+  animation: transShutterContentIn 300ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+@keyframes transShutterContentIn {
+  from { transform: scale(0.992); opacity: 0.92; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+/* 01: Dual Curtain Content */
+.trans-content--curtain.trans-content--closing {
+  transform: scale(0.99);
+  opacity: 0.9;
+}
+.trans-content--curtain.trans-content--opening {
+  animation: transCurtainContentIn 300ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+@keyframes transCurtainContentIn {
+  from { transform: scale(0.99); opacity: 0.9; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+/* 02: Horizon Wipe Content */
+.trans-content--wipe.trans-content--closing {
+  opacity: 0.95;
+}
+.trans-content--wipe.trans-content--opening {
+  animation: transWipeContentIn 260ms ease-out forwards;
+}
+@keyframes transWipeContentIn {
+  from { opacity: 0.95; }
+  to { opacity: 1; }
+}
+
+/* 03: Ethereal Blur Content (Zero physical overlays) */
+.trans-content--dissolve.trans-content--closing {
+  transform: translateY(-16px);
+  opacity: 0;
+  filter: blur(6px);
+  transition: transform 220ms cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 220ms cubic-bezier(0.4, 0, 0.2, 1),
+              filter 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.trans-content--dissolve.trans-content--opening {
+  animation: transDissolveIn 280ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+@keyframes transDissolveIn {
+  from { transform: translateY(16px); opacity: 0; filter: blur(6px); }
+  to { transform: translateY(0); opacity: 1; filter: blur(0); }
+}
+
+/* Overlay Container */
+.trans-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------------------
+   00: Shutter (Backup)
+   --------------------------------------------------------------------------- */
+.shutter-blade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 50%;
+  background: var(--color-paper, #111112);
+  will-change: transform;
+}
+.shutter-blade--top {
+  top: 0;
+  border-bottom: 1px solid var(--hair, rgba(244, 244, 237, 0.22));
+  transform: translateY(-100%);
+  transition: transform 260ms cubic-bezier(0.72, 0, 0.28, 1);
+}
+.shutter-blade--bottom {
+  bottom: 0;
+  border-top: 1px solid var(--hair, rgba(244, 244, 237, 0.22));
+  transform: translateY(100%);
+  transition: transform 260ms cubic-bezier(0.72, 0, 0.28, 1);
+}
+.trans-overlay--shutter.trans-overlay--closing .shutter-blade--top {
+  transform: translateY(0);
+}
+.trans-overlay--shutter.trans-overlay--closing .shutter-blade--bottom {
+  transform: translateY(0);
+}
+.trans-overlay--shutter.trans-overlay--opening .shutter-blade--top {
+  animation: bladeTopOpen 300ms cubic-bezier(0.72, 0, 0.28, 1) forwards;
+}
+.trans-overlay--shutter.trans-overlay--opening .shutter-blade--bottom {
+  animation: bladeBottomOpen 300ms cubic-bezier(0.72, 0, 0.28, 1) forwards;
+}
+@keyframes bladeTopOpen {
+  from { transform: translateY(0); }
+  to { transform: translateY(-100%); }
+}
+@keyframes bladeBottomOpen {
+  from { transform: translateY(0); }
+  to { transform: translateY(100%); }
+}
+
+.shutter-seam {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 100ms ease;
+  z-index: 10;
+}
+.trans-overlay--shutter.trans-overlay--closing .shutter-seam {
+  opacity: 1;
+  transition-delay: 140ms;
+}
+.shutter-seam__line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--color-blue, #d2ff00);
+  box-shadow: 0 0 10px var(--color-blue, #d2ff00);
+}
+.shutter-seam__tick {
+  position: relative;
+  width: 14px;
+  height: 14px;
+}
+.shutter-seam__tick::before {
+  content: "";
+  position: absolute;
+  top: 6.5px;
+  left: 0;
+  width: 14px;
+  height: 1px;
+  background: var(--color-ink, #f4f4ed);
+}
+.shutter-seam__tick::after {
+  content: "";
+  position: absolute;
+  left: 6.5px;
+  top: 0;
+  width: 1px;
+  height: 14px;
+  background: var(--color-ink, #f4f4ed);
+}
+
+/* ---------------------------------------------------------------------------
+   01: Dual Curtain (Vertical Lateral Blades)
+   --------------------------------------------------------------------------- */
+.curtain-panel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  background: var(--color-paper, #111112);
+  will-change: transform;
+}
+.curtain-panel--left {
+  left: 0;
+  border-right: 1px solid var(--hair, rgba(244, 244, 237, 0.22));
+  transform: translateX(-100%);
+  transition: transform 260ms cubic-bezier(0.72, 0, 0.28, 1);
+}
+.curtain-panel--right {
+  right: 0;
+  border-left: 1px solid var(--hair, rgba(244, 244, 237, 0.22));
+  transform: translateX(100%);
+  transition: transform 260ms cubic-bezier(0.72, 0, 0.28, 1);
+}
+.trans-overlay--curtain.trans-overlay--closing .curtain-panel--left {
+  transform: translateX(0);
+}
+.trans-overlay--curtain.trans-overlay--closing .curtain-panel--right {
+  transform: translateX(0);
+}
+.trans-overlay--curtain.trans-overlay--opening .curtain-panel--left {
+  animation: panelLeftOpen 300ms cubic-bezier(0.72, 0, 0.28, 1) forwards;
+}
+.trans-overlay--curtain.trans-overlay--opening .curtain-panel--right {
+  animation: panelRightOpen 300ms cubic-bezier(0.72, 0, 0.28, 1) forwards;
+}
+@keyframes panelLeftOpen {
+  from { transform: translateX(0); }
+  to { transform: translateX(-100%); }
+}
+@keyframes panelRightOpen {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+
+.curtain-axis {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 100ms ease;
+  z-index: 10;
+}
+.trans-overlay--curtain.trans-overlay--closing .curtain-axis {
+  opacity: 1;
+  transition-delay: 140ms;
+}
+.curtain-axis__line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--color-blue, #d2ff00);
+  box-shadow: 0 0 10px var(--color-blue, #d2ff00);
+}
+.curtain-axis__tick {
+  position: relative;
+  width: 14px;
+  height: 14px;
+}
+.curtain-axis__tick::before {
+  content: "";
+  position: absolute;
+  top: 6.5px;
+  left: 0;
+  width: 14px;
+  height: 1px;
+  background: var(--color-ink, #f4f4ed);
+}
+.curtain-axis__tick::after {
+  content: "";
+  position: absolute;
+  left: 6.5px;
+  top: 0;
+  width: 1px;
+  height: 14px;
+  background: var(--color-ink, #f4f4ed);
+}
+
+/* ---------------------------------------------------------------------------
+   02: Horizon Wipe (Continuous Scanline Sweep)
+   --------------------------------------------------------------------------- */
+.wipe-curtain {
+  position: absolute;
+  inset: 0;
+  background: var(--color-paper, #111112);
+  transform: translateX(-100%);
+}
+.wipe-beam {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--color-blue, #d2ff00);
+  box-shadow: 0 0 16px var(--color-blue, #d2ff00), 4px 0 24px var(--color-blue, #d2ff00);
+  transform: translateX(-100%);
+}
+.trans-overlay--wipe.trans-overlay--closing .wipe-curtain {
+  transform: translateX(0);
+  transition: transform 240ms cubic-bezier(0.65, 0, 0.35, 1);
+}
+.trans-overlay--wipe.trans-overlay--closing .wipe-beam {
+  transform: translateX(100vw);
+  transition: transform 240ms cubic-bezier(0.65, 0, 0.35, 1);
+}
+.trans-overlay--wipe.trans-overlay--opening .wipe-curtain {
+  animation: wipeOut 260ms cubic-bezier(0.65, 0, 0.35, 1) forwards;
+}
+.trans-overlay--wipe.trans-overlay--opening .wipe-beam {
+  animation: beamOut 260ms cubic-bezier(0.65, 0, 0.35, 1) forwards;
+}
+@keyframes wipeOut {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+@keyframes beamOut {
+  from { transform: translateX(0); }
+  to { transform: translateX(100vw); }
+}
+
+
+
+@media (prefers-reduced-motion: reduce) {
+  .trans-content {
+    transition: none !important;
+    animation: none !important;
+  }
+  .trans-overlay {
+    display: none !important;
   }
 }

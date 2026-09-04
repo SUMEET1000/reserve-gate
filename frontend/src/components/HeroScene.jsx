@@ -1,5 +1,10 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { GammaCorrectionShader } from 'three/addons/shaders/GammaCorrectionShader.js';
 
 // The hero, as one scene: an animated cobalt field and the glass portal that
 // bends it. They are together in here rather than in a canvas plus an SVG layer
@@ -15,14 +20,43 @@ import * as THREE from 'three';
 // Procedural throughout. No mesh file, no HDR, no texture request; the build
 // plan's cold-start budget (E21, 32.2 s measured) has no room for an asset the
 // page could start without.
+//
+// FROZEN, 4 Sept 2026. Sumeet: "I have finalized this current version of our 3D
+// hero. This is final ... don't change anything about the current version of 3D
+// Hero." Five rounds of his own instructions are in these numbers and each was
+// measured; a plausible-looking tweak to any of them undoes work he has already
+// signed off. What is frozen is everything to do with *the solid*:
+//
+//   gateShape        w 1.58, h 2.42, t 0.45   (w and h are also quoted as
+//                                              3.16 W / 4.84 H by Landing.jsx)
+//   ExtrudeGeometry  depth 1.55, bevelThickness 0.090, bevelSize 0.084,
+//                    bevelSegments 5, curveSegments 4, flat normals
+//   material         metalness 1, roughness 0.045, envMapIntensity 1.95,
+//                    iridescence 0.06 / IOR 1.38 / range [100,560],
+//                    clearcoat 0, colour white
+//   buildEnvironment every box(), every glow(), the #101012 floor, the horizon,
+//                    and STRIP_SCALE 0.81 - the strips' listed widths are
+//                    pre-scale, so the key strip is 96 * 0.81 = 78 px
+//   lights           key 0xffffff 0.30, rim 0xffffff 0.45
+//   renderer         antialias false, ACES, toneMappingExposure 1.08
+//   post chain       samples 4 target -> RenderPass -> UnrealBloomPass(0.52,
+//                    0.34, 0.88) -> lens uAmount 0.0011 -> GammaCorrectionShader
+//   placement        resize()'s gate x/y/scale/yaw, draw()'s gate rotation and
+//                    position
+//
+// What is NOT frozen is the contour field behind it - FIELD_VERT, FIELD_FRAG,
+// their uniforms and the `field` mesh. That is the next piece of work and it is
+// deliberately in the same file, so read the three constraints in FIELD_FRAG's
+// closing comment before touching it: the sheet must stay the CSS page colour,
+// the blend stays in sRGB, and the chain must keep ending in the gamma pass.
 
 // The canvas edge is invisible only while the field is exactly --color-paper, so
 // both colours are read from the page's own tokens rather than copied here. A
 // second copy of a colour is a second thing to forget, and a skin that swaps the
 // tokens repaints the canvas with them for free. The literals are The Orbit
 // Sheet's, used only when the stylesheet has not parsed yet.
-const FIELD_FALLBACK = 0xf0f0ee;
-const RING_FALLBACK = 0x900020;
+const FIELD_FALLBACK = 0x111112;
+const RING_FALLBACK = 0xd2ff00;
 
 function token(name, fallback) {
   try {
@@ -54,8 +88,19 @@ export function roundedShape(points, radius) {
   return shape;
 }
 
-// Two posts and a lintel, as one closed outline.
-function gateShape(w = 1.58, h = 2.42, t = 0.40) {
+// Two posts and a lintel, as one closed outline. `t` is the frame's own
+// thickness - how wide a post is and how deep the lintel is - and it is the only
+// control for it. 0.40 until 4 Sept 2026, raised on Sumeet's report that the
+// frame had thinned. It had not: the outline is untouched since the glass build
+// and a smaller bevel leaves *more* flat face, not less. What changed is that a
+// chrome post carries a bright band down one side and a near-black face on the
+// other, and the dark face reads as page rather than as post - so the lit part
+// alone reads as the whole thickness. The fix he asked for is real thickness,
+// not more light, because more light is what he had already capped.
+// `w` and `h` are load-bearing beyond this file: Landing.jsx draws an SVG
+// dimension chain quoting 3.16 W and 4.84 H, which are 2w and 2h. `t` is not
+// quoted there, so it is the one of the three that can move alone.
+function gateShape(w = 1.58, h = 2.42, t = 0.45) {
   return roundedShape([
     [-w, -h], [-w, h], [w, h], [w, -h],
     [w - t, -h], [w - t, h - t], [-(w - t), h - t], [-(w - t), -h],
@@ -73,53 +118,162 @@ function gateShape(w = 1.58, h = 2.42, t = 0.40) {
 // one dark strip so the bevels have something to go dark against.
 export function buildEnvironment(renderer) {
   const c = document.createElement('canvas');
-  // 512x256 rather than 256x128: at roughness 0 the sharpest mip is sampled
-  // almost directly, and a coarse equirect turns a specular streak into a
-  // staircase along the arris. The PMREM pass is a one-off at mount.
-  c.width = 512;
-  c.height = 256;
+  // 1024x512. A mirror at roughness 0.045 samples close to the sharpest mip, so
+  // the map is read almost directly and a coarse equirect turns a specular
+  // streak into a staircase along the arris. The PMREM pass is a one-off at
+  // mount.
+  c.width = 1024;
+  c.height = 512;
   const g = c.getContext('2d');
-  // A dark studio, because the page is one. The sheet reads near-black, so a
-  // cream room put a bright veil over every face and the solid came back as
-  // grey plaster however clear the material was.
-  //
-  // The bright band sits on the horizon and the room goes dark above and below
-  // it, and that placement is the whole Fresnel effect: a ray leaving a vertical
-  // face at a grazing angle travels almost horizontally and so samples the
-  // equator of this map. With a dark band there the silhouette reflected
-  // nothing and the edges read as dull grey.
-  const sky = g.createLinearGradient(0, 0, 0, 256);
-  sky.addColorStop(0.00, '#23262b');   // a cool ceiling bounce
-  sky.addColorStop(0.30, '#101215');
-  sky.addColorStop(0.44, '#5c646e');
-  sky.addColorStop(0.492, '#e8eef5');
-  sky.addColorStop(0.500, '#ffffff');  // the horizon band, and the rim it draws
-  sky.addColorStop(0.508, '#cdd6e0');
-  sky.addColorStop(0.58, '#2a2e34');
-  sky.addColorStop(1.00, '#08090a');
-  g.fillStyle = sky;
+  // A near-black void with a few separated lights standing in it, and the black
+  // between them is what matters rather than any one light's width. A flat
+  // mirror face reflects one region of this map at once, so a *continuous*
+  // bright area arrives on that face as a flat wash and the solid reads as
+  // painted sheet metal. Measured 4 Sept 2026: a full-width white horizon band -
+  // which is what a clear-glass room wants, because it draws the Fresnel rim -
+  // put the posts at 235,235,235 across their whole front. Separated strips land
+  // instead as the blown-out bands the reference images are made of. The bound
+  // is 118 px, also measured: at that width they merge into one blob.
+  // Not pure black, and the difference is the whole reason a face turned away
+  // from every light still reads as metal. At #000000 a flat face pointing at
+  // the void came back at 0 and the solid had holes in it - unlit patches
+  // darker than the page they stand on, which is not what an unlit mirror does
+  // in a real room. #101012 through envMapIntensity lands those faces just
+  // above the page's own (17,17,18), so the silhouette stays readable and
+  // nothing on the object is a hole. Measured 4 Sept 2026 over the gate's
+  // bounding box at 1600x900: 4065 pixels darker than the page at #000000,
+  // 0 at this value. Raising it much further is what turns the near-black body
+  // into brushed aluminium; that failure is recorded above.
+  g.fillStyle = '#101012';
   g.fillRect(0, 0, c.width, c.height);
+  // A faint lift under the horizon, so the underside of the lintel is not pure
+  // void. Above it stays at the base tone: an upward-facing face mirrors the
+  // ceiling almost undistorted, and any more tone up there is a flat tone
+  // painted across the whole top of the lintel.
+  const floor = g.createLinearGradient(0, 256, 0, 512);
+  floor.addColorStop(0.00, '#1a1a1c');
+  floor.addColorStop(1.00, '#101012');
+  g.fillStyle = floor;
+  g.fillRect(0, 256, c.width, 256);
 
-  // The softboxes. Pure white and well over the room, so on an ACES curve they
-  // land as highlights that roll off instead of flat clipped patches.
-  g.fillStyle = '#ffffff';
-  g.fillRect(44, 16, 52, 108);    // the big key, and the streak that runs a post
-  g.fillRect(300, 28, 32, 92);
-  g.fillRect(452, 40, 20, 72);
-  // One narrow hot strip, thin enough to read as the single sharp line that
-  // travels along an arris as the portal sways.
-  g.fillRect(196, 34, 7, 118);
-  // A cool fill opposite the key, so the shadow side is blue-grey rather than
-  // dead black. This is where the cyan on the edges comes from.
-  g.fillStyle = '#7fb4d8';
-  g.fillRect(360, 96, 96, 26);
+  // One softbox: bright in the middle, falling to the room at both edges. The
+  // soft ends are what make the streak travel along an arris as the portal
+  // sways instead of switching on and off at a hard boundary.
+  // Every strip narrows by this much, about its own centre. Sumeet, 4 Sept 2026:
+  // "i would like to reduce the reflection brightness from the 3d hero, just by
+  // a little bit", and 0.81 is the value he picked on the running page.
+  //
+  // It is a scale rather than eleven rewritten widths so the numbers below stay
+  // the readable record of what was tuned on 4 Sept, and so one edit moves all
+  // of them together the way the reference set was designed.
+  //
+  // This is the only lever that reaches reflection brightness, and that is
+  // measured rather than assumed: over the gate box at 1600x900, envMapIntensity
+  // 1.95 -> 0.90 moved the bright area 0.0% and toneMappingExposure 1.08 -> 0.86
+  // moved it 0.5%, because a pure white strip clips at any of those values. The
+  // same sweep on width moved it 21%. Do not reach for the other two.
+  const STRIP_SCALE = 0.81;
+  const box = (x, y, w, h, peak) => {
+    x = x + w * (1 - STRIP_SCALE) * 0.5;
+    w = w * STRIP_SCALE;
+    const grad = g.createLinearGradient(x, 0, x + w, 0);
+    grad.addColorStop(0.00, '#000000');
+    grad.addColorStop(0.50, peak);
+    grad.addColorStop(1.00, '#000000');
+    g.fillStyle = grad;
+    g.fillRect(x, y, w, h);
+  };
+
+  // A soft round light, and this is what shapes a flat face. A strip lands on a
+  // mirror face as a hard line with black either side; a radial falloff lands as
+  // a sweep from bright to dark across the whole face, which is what both
+  // reference images show and what a strip alone could not give.
+  const glow = (cx, cy, r, peak) => {
+    const grad = g.createRadialGradient(cx, cy, 0, cx, cy, r);
+    grad.addColorStop(0.00, peak);
+    // Steep. A gentle falloff spreads the same light over most of the map and
+    // the room stops being a room; the faces then read as one flat tone, which
+    // is brushed aluminium rather than the near-black bodies in the references.
+    grad.addColorStop(0.32, peak.replace(')', ', 0.22)').replace('rgb', 'rgba'));
+    grad.addColorStop(1.00, 'rgba(0,0,0,0)');
+    g.fillStyle = grad;
+    g.fillRect(cx - r, cy - r, r * 2, r * 2);
+  };
+
+  // Three, at azimuths a quarter-turn apart, so the solid is never turned to a
+  // side that has no light on it at all. Measured 4 Sept 2026: with only the
+  // strips below, the right-hand post sat at 6,6,7 against a 10,10,11 page and
+  // the silhouette was invisible.
+  // Raised and widened 4 Sept 2026 with the strips. These are what a flat face
+  // sees when it is not pointed at a strip, so they are the difference between
+  // a dark face and a black one - and "the black parts are outshining it" is
+  // what Sumeet reported when they were half these values. They stay well under
+  // the strips: only the pure white strips are meant to clear the bloom
+  // threshold.
+  glow(120, 250, 300, 'rgb(96,96,96)');
+  glow(590, 236, 250, 'rgb(72,72,72)');
+  glow(980, 268, 330, 'rgb(104,104,104)');
+  // A dimmer one low and to the side, for the underside of the lintel.
+  glow(760, 430, 230, 'rgb(54,54,54)');
+
+  // A thin white line on the equator, across every azimuth. A ray leaving a
+  // face at a grazing angle travels almost horizontally and so samples the
+  // equator, so this is the one mark that reaches the whole silhouette rather
+  // than one side of it - which is what the reference images have and what the
+  // scattered lights alone could not give. Thin is the condition: a band this
+  // tall (6 px of 512) reads on a flat front face as a single hairline, while
+  // the 0.42-0.53 ramp tried first read as a wash over the entire face.
+  const horizon = g.createLinearGradient(0, 240, 0, 274);
+  horizon.addColorStop(0.00, 'rgba(255,255,255,0)');
+  horizon.addColorStop(0.44, 'rgba(236,236,236,0.55)');
+  horizon.addColorStop(0.50, 'rgba(255,255,255,1)');
+  horizon.addColorStop(0.56, 'rgba(236,236,236,0.55)');
+  horizon.addColorStop(1.00, 'rgba(255,255,255,0)');
+  g.fillStyle = horizon;
+  g.fillRect(0, 240, c.width, 34);
+
+  // The key, and the tall streak that runs the length of a post. Wide, because
+  // width here is how much of a face comes back blown rather than merely bright,
+  // and blown is what the bloom pass has to work with. Black still separates
+  // them: the failure mode is a continuous bright field, not a wide light.
+  // Widened from 72 / 46 / 54 / 50 px on 4 Sept 2026, on Sumeet's instruction
+  // that the solid was not silver enough and the black was outshining it. This
+  // width is the only real brightness control in the scene, and that is a
+  // measured claim rather than a preference: envMapIntensity was moved 1.95 to
+  // 3.10 and toneMappingExposure 1.08 to 1.22 in the same session, and the two
+  // together shifted the blown area by under 6%. A pure white strip clips at
+  // either value, so what a face returns is set by how much of the map it sees.
+  // 118 px is still the known failure - a solid white blob and a haze over the
+  // page - so this sits below it.
+  box(40, 20, 96, 450, '#ffffff');
+  // Four more at scattered azimuths, so the solid catches a streak wherever it
+  // is turned rather than only at one angle of sway.
+  box(286, 60, 62, 380, '#ffffff');
+  box(506, 0, 72, 512, '#ffffff');
+  box(700, 100, 52, 320, '#ffffff');
+  box(868, 30, 68, 440, '#ffffff');
+  // A thin companion beside three of them. Every reference image carries a set
+  // of close parallel highlights rather than one, which is what a real softbox
+  // with a frame and a diffuser panel does.
+  box(176, 90, 14, 300, '#ffffff');
+  box(614, 40, 12, 380, '#ffffff');
+  box(806, 130, 13, 260, '#ffffff');
+  // Two short ones below the horizon. A mirror shows the floor as readily as the
+  // ceiling, and with nothing down there the lower half of the solid went dead
+  // black instead of catching the underside streak the references have.
+  box(180, 300, 90, 150, '#f2f2f2');
+  box(640, 330, 70, 130, '#f2f2f2');
+  // A dim fill opposite the key, so the shadow side is not dead black. Neutral,
+  // for the same reason the rim light is: anything with a hue in this room is a
+  // hue on the metal.
+  box(408, 210, 60, 90, '#9aa0a6');
   // No strip of the page's ink in here. One was tried on 4 Sept 2026 so the
   // coloured edge would belong to the palette, and it came back as a flat lime
   // panel across the whole top of the lintel: an upward-facing surface mirrors
   // whatever is above it almost undistorted, so a saturated block in the room
   // is a saturated block on the object. Rejected. The colour on the edges comes
-  // from dispersion and the rim light, which are angle-dependent and so stay on
-  // the edges. Do not put a coloured shape back in this room.
+  // from iridescence and the cool fill, which are angle-dependent and so stay
+  // on the edges. Do not put a coloured shape back in this room.
 
   const tex = new THREE.CanvasTexture(c);
   tex.mapping = THREE.EquirectangularReflectionMapping;
@@ -139,8 +293,11 @@ const FIELD_VERT = /* glsl */ `
   }
 `;
 
-// The animated field. Continuous, minimal kinetic streamlines flowing behind
-// the glass gate, with a subtle, non-intrusive hover deflection and clarity lift.
+// The animated field: topographic isolines drifting behind the gate, with a
+// subtle magnetic hover and a clarity lift. Chosen live on 4 Sept 2026 from five
+// candidates; the rest are recorded in DESIGN_PROGRESS.md so a later session does
+// not re-offer one he has already turned down.
+//
 // It is deliberately faint, and absent on the left: the headline sits over that
 // half and a moving pattern behind display type is noise, not depth.
 const FIELD_FRAG = /* glsl */ `
@@ -162,6 +319,15 @@ const FIELD_FRAG = /* glsl */ `
     return length(d);
   }
 
+  // One anti-aliased hairline per whole step of c. fwidth holds the stroke at a
+  // constant pixel width however fast c moves across the screen, which is what
+  // stops the radial and isoline families aliasing into moire where they crowd.
+  float hair(float c) {
+    float d = abs(fract(c) - 0.5);
+    float w = max(fwidth(c), 0.0008) * 1.25;
+    return 1.0 - smoothstep(0.0, w, d);
+  }
+
   void main() {
     vec2 p = (vUv - 0.5) * uSpan;
     p.y += uScroll * 1.6;
@@ -176,33 +342,42 @@ const FIELD_FRAG = /* glsl */ `
     float hoverField = (1.0 - smoothstep(0.0, hoverDist, distToMouse)) * uHoverActive;
     float hoverCore = exp(-distToMouse * distToMouse * 0.70) * uHoverActive;
 
-    // NEW HOVER EFFECT: Gentle magnetic contour pull (draws lines subtly toward cursor)
+    // Gentle magnetic pull: the pattern leans toward the cursor rather than
+    // anything being drawn at the cursor. Shared by all five patterns.
     vec2 pull = -toMouse * hoverCore * 0.14;
     vec2 pWarped = p + pull;
 
     // Localized harmonic resonance: subtle wave ripples along lines near pointer
     float hoverResonance = sin(distToMouse * 3.6 - uTime * 3.2) * hoverCore * 0.12;
 
-    // CALM, MINIMAL CONTINUOUS ANIMATION:
-    // Gentle harmonic waves flowing slowly across the section
-    float t = uTime * 0.45;
-    float w1 = sin(pWarped.x * 0.35 + t * 0.60) * 0.45;
-    float w2 = cos(pWarped.x * 0.70 - t * 0.40 + 0.8) * 0.25;
-    float w3 = sin(pWarped.x * 0.18 + pWarped.y * 0.25 + t * 0.30) * 0.20;
-    float wave = w1 + w2 + w3 + hoverResonance;
+    float t = uTime * 0.62;
 
-    // Clean, architectural streamline spacing
-    float spacing = 0.65;
-    float lineCoord = (pWarped.y - wave * 0.60) / spacing;
+    // Topographic isolines: a height field contoured at a fixed interval, so the
+    // lines close into loops and drift in place rather than scrolling past. The
+    // four sine terms are deliberately at unrelated frequencies - a common
+    // factor makes the field repeat and the loops start to tile.
+    //
+    // Chosen by Sumeet 4 Sept 2026 from five served live at ?bg=0..4. The four
+    // he did not pick - the shipped streamlines, a drifting weave, rays from the
+    // gate and ledger columns - are in DESIGN_PROGRESS.md with their
+    // measurements, and so are the three he had already rejected earlier that
+    // day: a PCB trace bus, a coordinate dot matrix with a cursor reticle, and
+    // the Orbit Sheet's concentric rings.
+    float height = sin(pWarped.x * 0.42 + t * 0.25) * cos(pWarped.y * 0.38 - t * 0.20)
+                 + 0.55 * sin(pWarped.x * 0.24 + pWarped.y * 0.31 + t * 0.16)
+                 + 0.35 * cos(pWarped.x * 0.61 - pWarped.y * 0.17 - t * 0.22)
+                 + hoverResonance;
 
-    // Razor-sharp anti-aliased hairline
+    // 0.30 is the contour interval. Smaller packs the loops tighter; the hair()
+    // width is in screen pixels, so tightening it past about 0.20 puts adjacent
+    // contours inside one stroke and the field greys over instead of drawing.
+    float lineCoord = height / 0.30;
     float distToLine = abs(fract(lineCoord) - 0.5);
     float lw = max(fwidth(lineCoord), 0.0008) * 1.25;
     float lineShape = 1.0 - smoothstep(0.0, lw, distToLine);
 
-    // Major rhythm: every 4th streamline is slightly accented
-    float majorIndex = step(0.5, 1.0 - abs(fract(lineCoord * 0.25) - 0.5) * 4.0);
-    float lineWeight = mix(0.75, 1.15, majorIndex);
+    // Every fifth contour slightly heavier, the way a survey map indexes them.
+    float lineWeight = mix(0.75, 1.15, step(0.5, 1.0 - abs(fract(lineCoord * 0.20) - 0.5) * 4.0));
 
     // Soft traveling kinetic pulse along the line: subtle, not blinding
     float pulse = exp(-pow(fract((pWarped.x * 0.10 - t * 0.35 + floor(lineCoord) * 0.33)) - 0.5, 2.0) * 220.0);
@@ -214,11 +389,10 @@ const FIELD_FRAG = /* glsl */ `
     float glassZone = exp(-gDist * 0.30);
 
     // REFINED VISIBILITY (brighter, legible, clean, minimal):
-    float baseLine = lineShape * lineWeight * 0.175 * falloff;
-    float glassLines = glassZone * lineShape * 0.20;
+    float baseLine = lineShape * lineWeight * 0.205 * falloff;
+    float glassLines = glassZone * lineShape * 0.225;
 
-    // NEW SUBTLE HOVER EFFECT:
-    // Delicate micro-packets and coordinate ticks strictly along hovered streamlines
+    // Delicate micro-packets and coordinate ticks strictly along hovered lines
     float hoverPulse = exp(-pow(fract((pWarped.x * 0.55 - t * 1.6 + floor(lineCoord) * 0.45)) - 0.5, 2.0) * 100.0) * hoverField;
     float hoverTicks = step(0.72, sin(pWarped.x * 8.0 + floor(lineCoord) * 3.14)) * hoverField * 0.16;
     float hoverLineLift = lineShape * (hoverField * 0.16 + hoverPulse * 0.22 + hoverTicks);
@@ -239,7 +413,23 @@ const FIELD_FRAG = /* glsl */ `
     float isDark = step(0.5, 1.0 - (uPaper.r + uPaper.g + uPaper.b) * 0.3333);
 
     // Rest line color: crisp architectural silver-slate on dark, subtle crimson on light
-    vec3 restLineCol = mix(uPaper, isDark > 0.5 ? vec3(0.56, 0.64, 0.70) : uInk, isDark > 0.5 ? 0.40 : 0.26);
+    // The line colour, and it is the brightness control rather than the amount:
+    // once a hairline is fully drawn the blend lands exactly on this value and
+    // stops, so raising the pattern amount cannot lift it. Measured 4 Sept 2026:
+    // 8x on the amount moved p99 55 -> 59, four steps, while moving this mix
+    // moved it 33 -> 48.
+    //
+    // Half the slate, half the page's own lime accent, at 0.58. Chosen by Sumeet
+    // on the running page from seven candidates: "a mix of look 2 & 3, and with
+    // just a little teeny tiny low brightness". Slate alone and lime alone were
+    // both offered and both passed over.
+    //
+    // The ground is untouched by this: it is uPaper wherever the pattern is
+    // zero, so a brighter line raises contrast and never greys the black
+    // between the lines. Measured over a far corner across all seven: 51.0%
+    // exact page colour, identical.
+    vec3 slate = vec3(0.56, 0.64, 0.70);
+    vec3 restLineCol = mix(uPaper, isDark > 0.5 ? mix(slate, uInk, 0.50) : uInk, isDark > 0.5 ? 0.58 : 0.26);
     // Active hover line color: refined clear ink
     vec3 hoverLineCol = mix(restLineCol, uInk, 0.58);
 
@@ -249,23 +439,21 @@ const FIELD_FRAG = /* glsl */ `
     // the perceived distance between sheet and ink. Blending the same stop in
     // linear light puts it well above that - a visibly brighter, fatter line for
     // the same maths - so the two steps stay apart: mix here, convert after.
+    // Tried and reverted 4 Sept 2026: writing the line as alpha over a
+    // transparent canvas moves that blend into the composer's linear target and
+    // makes the field the loudest thing in the frame.
     vec3 col = mix(uPaper, lineColor, clamp(totalPattern * totalMask, 0.0, 1.0));
 
-    // Then hand the pipeline true light, because this plane is drawn twice per
-    // frame: once to the canvas, and once into the linear half-float target the
-    // glass refracts. Writing an sRGB number straight out suited the canvas and
-    // was read back as linear by the transmission sampler, where 0.067 is about
-    // four times the 0.0066 it should be - which is why the sheet behind the
-    // portal came out mid-grey while the same sheet beside it was correct, and
-    // why the glass read as milky plastic however clean the material was.
-    // Converting here and letting colorspace_fragment re-encode is a round trip
-    // to the canvas and a correction to the target.
+    // Then hand the pipeline true light. The composer's target is linear, so
+    // colorspace_fragment below is a no-op and the sRGB encode happens once, in
+    // the gamma pass at the end of the chain.
     gl_FragColor = sRGBTransferEOTF(vec4(col, 1.0));
 
-    // No tonemapping_fragment beside it, deliberately. The canvas edge is
-    // invisible only while this plane is exactly the CSS colour, and an ACES
-    // curve over a flat page colour is not that colour. Tone mapping belongs to
-    // the lit material, which has highlights to roll off; this has none.
+    // No tonemapping_fragment beside it, deliberately, and this is what keeps
+    // the sheet the exact CSS colour through a post-processing chain: the ACES
+    // curve is compiled into the lit material and never runs over this plane.
+    // The chain therefore ends in a gamma pass and not an OutputPass, which
+    // would tone map the whole frame and take the sheet to about 0.21 of itself.
     #include <colorspace_fragment>
   }
 `;
@@ -283,8 +471,11 @@ function mount(host) {
   let renderer;
   try {
     renderer = new THREE.WebGLRenderer({
-      // MSAA on top of an already supersampled buffer pays twice for one edge.
-      antialias: window.devicePixelRatio < 1.5,
+      // Off, and it is not a downgrade: since the post chain arrived the scene
+      // is drawn into the composer's own target and never into this buffer, so
+      // MSAA asked for here was allocated and then never sampled. The
+      // multisampled composer target below is where it actually happens now.
+      antialias: false,
       alpha: false,
       // Named explicitly: 'high-performance' wakes the discrete GPU and cost
       // 940 ms of first paint on this laptop, measured 31 Aug 2026.
@@ -310,7 +501,12 @@ function mount(host) {
   // lets a specular run past 1.0 and roll off as a highlight instead of
   // clipping to a flat white patch along the arris.
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.0;
+  // Above 1.0 on purpose: the reference images are near-black bodies with the
+  // streaks blown fully out, and at 1.0 the hottest reflection of a pure white
+  // softbox lands around 0.8 and reads as light grey. Like envMapIntensity
+  // below, it barely moves the blown area; it is kept above 1.0 for the roll-off
+  // and is not the dial to reach for when the solid looks wrong.
+  renderer.toneMappingExposure = 1.08;
   // Transmission re-renders the scene into an offscreen target every frame, and
   // that target is what shows through the glass. At 0.5 the refracted lines
   // carried the blur of the buffer rather than the bend of the solid, which is
@@ -357,69 +553,68 @@ function mount(host) {
   const gateGeometry = new THREE.ExtrudeGeometry(gateShape(), {
     depth: 1.55,
     bevelEnabled: true,
-    // One segment is the whole point: it is a chamfer, so the arris is a flat
-    // facet with its own normal rather than a smoothly turned corner.
-    bevelThickness: 0.115,
-    bevelSize: 0.105,
-    bevelSegments: 1,
-    curveSegments: 3,
+    // Rounded, not chamfered, and this is the single change that makes the
+    // solid read as chrome. One segment gives an edge one flat facet, which
+    // reflects one region of the room and so draws one thin line - correct for
+    // cast glass, which is what this was built for. Every chrome reference
+    // Sumeet supplied carries a *stack* of parallel highlights along each edge,
+    // and that is what a turned corner does: each of these five facets faces a
+    // slightly different way, catches a different strip, and the set of them
+    // reads as one bright band wrapping the form.
+    // The size stays under the old chamfer's: it was opened to 0.16 / 0.15
+    // first, cut to 0.105 / 0.098 on "the edges are too rounded, so make it less
+    // round", and cut again to here on "a very little less ... a little bit more
+    // sharper". The segment count is what buys the chrome, not the radius, so
+    // the radius can keep coming down without losing the effect - the five lines
+    // just sit closer together and read as a crisper edge.
+    bevelThickness: 0.090,
+    bevelSize: 0.084,
+    bevelSegments: 5,
+    curveSegments: 4,
   });
   // Per-face normals. Shared vertices average the facets back into a curve,
-  // which is exactly the plaster look; splitting them keeps every facet flat.
+  // which is exactly the plaster look; splitting them keeps every facet flat -
+  // including across the rounded edge above, where the discrete steps are the
+  // parallel highlight lines and a smoothed normal would blur them into one.
   gateGeometry.computeVertexNormals();
 
   const gate = new THREE.Mesh(
     gateGeometry,
     new THREE.MeshPhysicalMaterial({
+      // Silver, not tinted. On a metal this colour multiplies the reflection, so
+      // anything but white lays a cast over the whole room.
       color: 0xffffff,
-      transmission: 1,
-      // The optical path length through the solid, and so how far the field
-      // behind it bends. Tuned against the page it sits on, which is near-black:
-      // more thickness only sends the refracted ray further into a dark
-      // background, so past this the solid stops reading as glass and starts
-      // reading as a hole.
-      thickness: 2.1,
-      // Optical crown glass. 2.05 was diamond territory and threw total internal
-      // reflection across most of the posts, which reads as a dark core.
-      ior: 1.55,
-      // Real glass splits white light, and three renders that by sampling the
-      // transmission target three times at spread IORs. This is the whole
-      // rainbow budget, and it lands on the chamfers where the path is longest.
-      dispersion: 3.4,
-      roughness: 0.0,
-      metalness: 0,
-      // Low, and lowered again once it was measured on real hardware. Every unit
-      // of this is the room painted back onto the faces, and a face that shows
-      // the room is a face you cannot see through. Software rendering hid how
-      // much brighter this reads on a GPU; measured on an RTX 4050, 4 Sept 2026.
-      envMapIntensity: 0.10,
-      // Barely-there cyan, and the only colour in the material.
-      attenuationColor: new THREE.Color(0xeaf8ff),
-      // Short, so the glass reads dense rather than as a clear pane. Lowering
-      // transmission below 1.0 would have read as milk instead, because what
-      // transmission gives back below 1.0 is the white diffuse colour, not
-      // density.
-      attenuationDistance: 8.5,
-      // No lacquer. Clearcoat is a second mirror over the whole surface and it
-      // reflects at every angle rather than only at grazing ones - it was the
-      // single thing that made the flat faces catch light. The crisp line along
-      // an arris comes from the bevel's own normal and from dispersion.
-      clearcoat: 0.0,
-      clearcoatRoughness: 0.0,
-      // A thin-film interference coat, thin enough to be seen only at grazing
-      // angles. Dispersion colours what is behind the glass; iridescence colours
-      // the glass's own edge, and only one of those can put a fringe on a bevel.
-      iridescence: 0.11,
+      metalness: 1.0,
+      // A mirror, but not a perfect one. At exactly 0 the solid reflects the
+      // environment canvas sharply enough to show its own seams; a little
+      // roughness blurs the map without softening the streaks.
+      roughness: 0.045,
+      // Well over 1, and it is the room being black that makes that safe. This
+      // multiplies every sample, so a black wall stays black at any value while
+      // a pure white strip goes past 1.0 - which is the only way an 8-bit canvas
+      // environment can produce a highlight bright enough to clear the bloom
+      // threshold. At 1.0 nothing did, and the solid had crisp streaks and no
+      // light coming off them; the references are made of that light.
+      // This number is close to inert, and that is worth knowing before anyone
+      // reaches for it. Measured 4 Sept 2026: moving it 1.95 to 3.10 changed the
+      // gate's blown area by under 1%, because ACES puts a pure white strip past
+      // the shoulder at either value. It is the floor of the room, not this,
+      // that decides how dark the unlit faces are, and the strip widths that
+      // decide how bright the lit ones are.
+      envMapIntensity: 1.95,
+      // A thin-film coat over the metal, and what puts the faint rainbow on the
+      // chamfers instead of a flat silver line. Dispersion cannot do that job
+      // here: dispersion colours what is seen through a solid, and nothing is
+      // seen through this one any more.
+      iridescence: 0.06,
       iridescenceIOR: 1.38,
       // Wide, so the fringe cycles through cyan, magenta and warm across a
       // single chamfer instead of sitting on one hue.
       iridescenceThicknessRange: [100, 560],
-      // Below the 0.5 that is physically correct for glass, on purpose. This
-      // scales the whole specular lobe including its Fresnel term, so lowering
-      // it is what makes the front faces stop showing the room while the
-      // grazing silhouette still lifts.
-      specularIntensity: 0.15,
-      specularColor: new THREE.Color(0xffffff),
+      // No lacquer. Clearcoat is a second mirror over a surface that is already
+      // a mirror, and it only flattens the contrast between face and chamfer.
+      clearcoat: 0.0,
+      clearcoatRoughness: 0.0,
     })
   );
   gate.geometry.center();
@@ -428,20 +623,110 @@ function mount(host) {
   const key = new THREE.DirectionalLight(0xffffff, 0.30);
   key.position.set(3.2, 4.4, 5.5);
   scene.add(key);
-  // Cool, and behind. A rim from behind hits only the faces turned away from
-  // the camera, which are the grazing ones, so its whole contribution lands on
-  // the silhouette and the chamfers. Cyan because that is the edge colour this
-  // material is after, and putting it in the light rather than in the
-  // attenuation keeps the body itself colourless.
-  const rim = new THREE.DirectionalLight(0x66d9ff, 0.65);
+  // Behind, so it hits only the faces turned away from the camera - the grazing
+  // ones - and its whole contribution lands on the silhouette and the chamfers.
+  // White, not cyan. A metal takes the light's colour into its specular whole,
+  // with no diffuse term to dilute it, so the cyan lamp this used to be painted
+  // a blue edge down the right-hand post. Silver needs a neutral room.
+  const rim = new THREE.DirectionalLight(0xffffff, 0.45);
   rim.position.set(-4.5, -1.4, -3.2);
   scene.add(rim);
+
+  // The chain that makes it look photographed rather than rendered. Every
+  // reference image is a chrome body whose highlights bleed light into the
+  // black around them and carry a colour fringe on the edges; neither is a
+  // material property, so no amount of tuning the metal produces either.
+  // Multisampled, and this is the only anti-aliasing in the scene. An
+  // EffectComposer with no target of its own builds an unsampled one, so from
+  // the moment this chain was added the renderer's own `antialias` flag was
+  // being allocated and thrown away - every chamfer arris and every contour
+  // hairline was drawn with no coverage information at all, which is the
+  // stair-stepping visible standing still and crawling while the gate sways.
+  // HalfFloatType is the composer's own default and is kept explicitly: the
+  // bloom pass reads values well past 1.0 off the blown strips, and an 8-bit
+  // target clips them to flat white before the pass ever sees them.
+  const composerTarget = new THREE.WebGLRenderTarget(1, 1, {
+    type: THREE.HalfFloatType,
+    samples: 4,
+  });
+  const composer = new EffectComposer(renderer, composerTarget);
+  composer.addPass(new RenderPass(scene, camera));
+
+  // Threshold above the body and below the hot streaks, so only the blown parts
+  // spill. Lower and the whole solid glows, which is fog rather than light.
+  // Strength, radius, threshold. The threshold is the important one: at 0.62
+  // the contour lines cleared it and the whole background glowed, which reads as
+  // fog. Raised to 0.88 on 4 Sept 2026 with the wider strips: the solid now has
+  // roughly seven times the blown area it had, so the old threshold let far more
+  // of it spill.
+  // Radius is the number that decides whether this is light coming off the
+  // solid or a fog over the page. At 1.0 the haze reached the copy column and
+  // lifted the sheet by eye across the whole right half - which is the one thing
+  // this pass is not allowed to do. Strength and radius both came down on
+  // 4 Sept 2026, 0.80/0.42 to 0.52/0.34, for the same reason the threshold went
+  // up - the same pass over a much brighter solid is a much bigger haze.
+  // Measured after: the page ground is exact at 4 of 6 sample points and lifts
+  // to 21 and 18 at the two nearest the gate. That residue is the price of the
+  // brightness Sumeet chose on 4 Sept and is not a regression to chase.
+  const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.52, 0.34, 0.88);
+  composer.addPass(bloom);
+
+  // Chromatic aberration and a wide horizontal flare, in one pass. The offset
+  // scales with distance from the centre, the way a real lens fails, and is
+  // near zero over the middle of the frame where the copy sits.
+  const lens = new ShaderPass({
+    uniforms: {
+      tDiffuse: { value: null },
+      uAmount: { value: 0.0011 },
+      uAspect: { value: 1 },
+    },
+    vertexShader: /* glsl */ `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      precision highp float;
+      varying vec2 vUv;
+      uniform sampler2D tDiffuse;
+      uniform float uAmount;
+      uniform float uAspect;
+      void main() {
+        vec2 d = vUv - 0.5;
+        float r = length(vec2(d.x * uAspect, d.y));
+        // Gated on how bright this pixel already is, so the split lands on the
+        // chrome and never on the sheet or its contour lines. Without the gate a
+        // 1 px hairline splits into a red line and a cyan line, which changes
+        // the background - and the background is not what this pass is for.
+        vec3 here = texture2D(tDiffuse, vUv).rgb;
+        float lum = dot(here, vec3(0.2126, 0.7152, 0.0722));
+        vec2 off = d * uAmount * r * 4.0 * smoothstep(0.30, 0.75, lum);
+        // Red pushed out, blue pulled in, green left alone: the split a simple
+        // lens makes, and the red-and-cyan edge fringe in the references.
+        vec4 c;
+        c.r = texture2D(tDiffuse, vUv + off).r;
+        c.g = texture2D(tDiffuse, vUv).g;
+        c.b = texture2D(tDiffuse, vUv - off).b;
+        c.a = texture2D(tDiffuse, vUv).a;
+        gl_FragColor = c;
+      }
+    `,
+  });
+  composer.addPass(lens);
+
+  // Last: the sRGB encode, and nothing else. Tone mapping is already done, per
+  // material, inside the RenderPass - which is the whole reason this is not an
+  // OutputPass. See the note at the end of FIELD_FRAG.
+  composer.addPass(new ShaderPass(GammaCorrectionShader));
 
   // Half the visible height at a given distance, for both the fitting below and
   // the plane that has to cover the frame exactly.
   const halfAt = d => Math.tan((camera.fov * Math.PI) / 360) * d;
   let gateBaseY = 0;
   let gateBaseX = 0;
+  let gateBaseYaw = 0;
   // Where the portal sits in the same -1..1 space the pointer is reported in,
   // so the draw loop can ask how near the cursor is to it without projecting
   // anything. Kept in sync with gateBaseX/gateBaseY by resize().
@@ -452,6 +737,9 @@ function mount(host) {
     const { clientWidth: w, clientHeight: h } = host;
     if (!w || !h) return;
     renderer.setSize(w, h, false);
+    composer.setSize(w, h);
+    composer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+    lens.uniforms.uAspect.value = w / h;
     camera.aspect = w / h;
 
     // Solve the camera distance rather than guessing it at a breakpoint: the
@@ -472,8 +760,22 @@ function mount(host) {
     gateBaseX = wide ? halfH * camera.aspect * 0.36 : 0;
     gate.position.x = gateBaseX;
     // Narrow, the canvas still covers the whole section but the copy stacks
-    // under the portal, so the portal has to move up out from behind it.
-    gateBaseY = wide ? 0 : halfH * 0.52;
+    // above the void, so the portal moves down into the void below it.
+    gateBaseY = wide ? 0 : -halfH * 0.41;
+    // And it shrinks there. Clear glass could stand behind the paragraph because
+    // it was transparent; a mirror cannot. Measured 4 Sept 2026 at 390x844, a
+    // full-size chrome post ran at 200+ luminance straight under the white body
+    // copy. At 0.72 the solid clears the copy block and stops being a contrast
+    // problem, and it also stops being clipped by the top of the canvas, which
+    // it already was.
+    gate.scale.setScalar(wide ? 1 : 0.72);
+    // And it is turned, on narrow only. Wide, the portal sits off to one side and
+    // the camera already sees it at an angle; centred on a phone it faces the
+    // lens square, so every front face reflects the one part of the room that is
+    // directly behind the camera - which is black. Measured 4 Sept 2026 at
+    // 390x844: the solid rendered as a flat 8,8,9 slab with no highlight on it
+    // at all. A third of a radian is enough to bring a softbox onto the posts.
+    gateBaseYaw = wide ? 0 : 0.38;
     // Divide out the half-extents and the world position becomes the pointer's
     // own units. y flips because the pointer is measured from the top of the
     // host and the world is measured up from its middle.
@@ -570,7 +872,7 @@ function mount(host) {
     const hover = Math.exp(-(dx * dx + dy * dy) * 3.2) * hoverActive;
     const reach = 1.0 + hover * 1.6;
 
-    gate.rotation.y = Math.sin(t * 0.30) * 0.045 + eased.x * 0.155 * reach;
+    gate.rotation.y = gateBaseYaw + Math.sin(t * 0.30) * 0.045 + eased.x * 0.155 * reach;
     // The nod. Its idle share is raised with the pointer share, so the object
     // still moves in this axis when nobody is pointing at it - a portal that
     // only tilts under the cursor reads as a control, not as a thing standing
@@ -600,7 +902,7 @@ function mount(host) {
     const t2 = (camera.position.z - FIELD_Z) / camera.position.z;
     uniforms.uCenter.value.set(gate.position.x * t2, gate.position.y * t2);
 
-    renderer.render(scene, camera);
+    composer.render();
   }
 
   function tick() {
@@ -650,6 +952,7 @@ function mount(host) {
     gate.material.dispose();
     field.geometry.dispose();
     field.material.dispose();
+    composer.dispose();
     renderer.dispose();
     renderer.domElement.remove();
   };

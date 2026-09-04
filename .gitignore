@@ -95,3 +95,7 @@ DESIGN_PROGRESS.md
 references/
 assets/
 
+
+# Local snapshots of the private files above, taken before a risky edit. Dated,
+# so the glob covers the next one too.
+.private-backup-*/

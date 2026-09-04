@@ -2,3 +2,8 @@
 # chain verification on a machine with a different core.autocrlf setting.
 *.jsonl -text
 *.py text eol=lf
+
+# An OpenTimestamps proof binds exact bytes. CRLF conversion changes them, so a
+# stamp made on Windows would fail ots verify on any other machine (edge case e9).
+eval_report.md -text
+*.ots binary

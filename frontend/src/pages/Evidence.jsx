@@ -15,6 +15,9 @@ const REPRO = `git clone https://github.com/SUMEET1000/reserve-gate && cd reserv
 pip install -r requirements.txt
 pytest && python harness/run_eval.py && python -m src.buyer --scripted --overspend`;
 
+const OTS_VERIFY = `pip install opentimestamps-client
+ots verify eval_report.md.ots`;
+
 // A model that did not answer gets a dash in every column it has no value for,
 // so it can never be read as one that agreed.
 const EMPTY = '—';
@@ -130,6 +133,57 @@ function ArchitectureFlow() {
   );
 }
 
+// The proof that the numbers above existed on a given day, drawn as the issue
+// stamp under the sheet border. The digest is not written here: the server
+// recomputes it from the report and compares it to the digest the proof file
+// actually commits to, so a report regenerated without being re-stamped says so
+// instead of this page printing a hash that no longer proves anything.
+function OtsProof({ state }) {
+  return (
+    <Async state={state} height="7rem">
+      {e => {
+        const o = e.ots;
+        if (!o) {
+          return (
+            <p>
+              No timestamp proof is committed in this copy. Create one with
+              {' '}<code>ots stamp eval_report.md</code>.
+            </p>
+          );
+        }
+        if (!o.matches) {
+          return (
+            <>
+              <p>
+                The report has changed since it was stamped, so this proof no longer covers it.
+                Re-stamp the report or treat these results as untimestamped.
+              </p>
+              <p className="reading__hash">report {o.digest} · proof commits to {o.stamped}</p>
+            </>
+          );
+        }
+        return (
+          <>
+            <p>
+              The test results on this page were submitted to the OpenTimestamps calendars, which
+              fold them into the Bitcoin blockchain. Nobody involved in this project can move that
+              date afterwards. The Bitcoin block is still pending — it attaches within a day, and
+              the proof is already permanent without it.
+            </p>
+            <p className="reading__hash">report fingerprint {o.digest}</p>
+            <CodeBlock code={OTS_VERIFY} />
+            <p>
+              Run it in a clone, beside <code>eval_report.md</code>. While the block is pending the
+              command reports that and exits non-zero; what it must never say is that the file does
+              not match.
+            </p>
+          </>
+        );
+      }}
+    </Async>
+  );
+}
+
 export default function Evidence() {
   // One fetch feeds every panel. Splitting it would be four reads of the same
   // committed documents on every visit.
@@ -159,6 +213,7 @@ export default function Evidence() {
         + 'A single counterexample destroys that claim, so this page provides the '
         + 'verifiable reports and tools to test it.'}
       stats={h ? [['Cases', h.cases], ['False allow', h.allow]] : []}
+      ots={<OtsProof state={evidence} />}
       footer={'One thing this does not protect — reserve-gate limits what the AI can spend, not '
         + 'what the shop owner can. Anyone holding the raw Razorpay key can skip this gate '
         + 'entirely and pay directly. The whole design assumes the AI is given a reserve-gate '

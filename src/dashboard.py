@@ -145,6 +145,42 @@ def model_rows() -> list | None:
     return rows if isinstance(rows, list) else None
 
 
+# A detached OpenTimestamps proof opens with a fixed 31-byte magic, a version
+# varint, the file-hash op (0x08 is sha256) and then the 32-byte digest it
+# commits to. Reading those bytes is the whole parse; everything after them is
+# the attestation path, which only `ots verify` needs.
+OTS_MAGIC = b"\x00OpenTimestamps\x00\x00Proof\x00\xbf\x89\xe2\xe8\x84\xe8\x92\x94"
+OTS_SHA256 = 0x08
+
+
+def ots_proof() -> dict | None:
+    """The OpenTimestamps proof of eval_report.md, checked rather than quoted.
+
+    The report's digest is recomputed here on every read and compared against
+    the digest the proof actually commits to, so a report regenerated without
+    being re-stamped reports as not matching instead of the page printing a
+    hash that no longer proves anything. Missing or unparseable is None and the
+    panel shows its empty state, the same way model_rows() does: this is a
+    report, and it must never 500 the host that moves money.
+
+    `eval_report.md` is read as bytes, not through artefact(): a proof binds one
+    exact byte string, and `.gitattributes` marks the file `-text` so the bytes
+    are the same on every machine (edge case e9).
+    """
+    try:
+        report = (ROOT / "eval_report.md").read_bytes()
+        proof = (ROOT / "eval_report.md.ots").read_bytes()
+    except OSError:
+        return None
+    head = len(OTS_MAGIC)
+    if not proof.startswith(OTS_MAGIC) or len(proof) < head + 34 or proof[head + 1] != OTS_SHA256:
+        return None
+    stamped = proof[head + 2:head + 34].hex()
+    digest = hashlib.sha256(report).hexdigest()
+    return {"digest": digest, "stamped": stamped, "matches": digest == stamped,
+            "proof_bytes": len(proof)}
+
+
 @functools.lru_cache(maxsize=None)
 def static(name: str) -> tuple[bytes, str]:
     """A file from web/ with its ETag. Missing is empty, not an exception: a
@@ -956,7 +992,8 @@ async def api_evidence(request):
                   "limitations": limitations(),
                   "chain": {"verified": chain["verified"], "bad_line": chain["bad_line"],
                             "tail": chain["tail"], "records": len(chain["records"])},
-                  "models": model_rows()},
+                  "models": model_rows(),
+                  "ots": ots_proof()},
                  session_token(request), request)
 
 

@@ -464,17 +464,13 @@ code,
 
 .ots-proof-slot p {
   margin-top: 0.7rem;
+  max-width: 68ch;
   color: var(--color-muted);
 }
 
-/* The value is specified and not yet stamped, so the slot is drawn as a part
-   that is dimensioned and not yet present. It stays empty until the merge. */
-.ots-proof-slot::after {
-  display: block;
-  min-height: 4.5rem;
-  margin-top: 1.4rem;
-  border: 1px dashed var(--hair);
-  content: "";
+.ots-proof-slot .reading__hash,
+.ots-proof-slot pre {
+  margin-top: 1.1rem;
 }
 
 @supports (animation-timeline: view()) {

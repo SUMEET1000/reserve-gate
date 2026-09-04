@@ -294,6 +294,28 @@ unkeyed, so on its own it catches an edited, deleted or reordered record but not
 a wholesale rewrite. This digest is committed here, beside the log it summarises,
 so a recomputed log no longer matches the value the repository already holds.
 
+### Timestamped independently
+
+Both digests above are committed by the author, so they date the evidence only as
+well as git history does. [eval_report.md.ots](eval_report.md.ots) is an
+[OpenTimestamps](https://opentimestamps.org) proof that closes that gap: it
+commits `eval_report.md` to the Bitcoin blockchain through public calendar
+servers, so the date the results existed is one nobody in this project can move.
+
+```console
+pip install opentimestamps-client
+ots verify eval_report.md.ots          # run it beside eval_report.md
+```
+
+Stamped 4 Sept 2026 over sha256
+`065cbdfa98acc053a313118c89aff4a3bdc3ab286359a534c1fd06e8eac2afcf`. **The Bitcoin
+attestation is still pending** — it attaches within about a day, and until then
+`ots verify` reports *pending confirmation* and exits non-zero. Run
+`ots upgrade eval_report.md.ots` to pull the block in once it lands. What the
+command must never report is that the file does not match: `eval_report.md` is
+marked `-text` in `.gitattributes` so its bytes are identical on every platform,
+and regenerating the report without re-stamping it would break the proof.
+
 ## Webhook reconciliation
 
 `POST /webhook` is the only non-health route exempt from bearer authentication. It is

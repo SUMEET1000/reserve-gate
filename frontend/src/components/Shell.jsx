@@ -96,7 +96,7 @@ function SheetIndex({ current }) {
 // drawing puts words about itself. Replacing the illustration with it is not a
 // like-for-like swap - a detail sheet has no hero image, and the page is
 // quieter and shorter for not having one.
-export function ProofPage({ title, lede, current, footer, children, brand, stats }) {
+export function ProofPage({ title, lede, current, footer, children, brand, stats, ots }) {
   return (
     <>
       <SiteHeader>
@@ -139,10 +139,13 @@ export function ProofPage({ title, lede, current, footer, children, brand, stats
 
       <main id="main-content" tabIndex="-1" className="sheet">{children}</main>
 
+      {/* The proof of when the results existed. It sits outside <main> because
+          it is about the sheet rather than on it - the same reason a drawing
+          puts its issue stamp below the border and not inside the view. */}
       {current === '/evidence' && (
         <section className="ots-proof-slot" aria-labelledby="ots-proof-title">
           <h2 id="ots-proof-title">OpenTimestamps proof</h2>
-          <p>Generated after merge.</p>
+          {ots}
         </section>
       )}
 

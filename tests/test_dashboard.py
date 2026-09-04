@@ -843,3 +843,42 @@ def test_the_mcp_transport_still_works_beside_the_dashboard():
         # And the public site is still reachable on the same app.
         assert client.get("/api/session").status_code == 200
         assert json.loads(client.get("/api/catalogue").text)["items"]
+
+
+def test_a_report_edited_after_stamping_reports_as_unproven(tmp_path, monkeypatch):
+    """The panel's only job is to notice that the proof no longer covers the
+    report. One that cannot say so is decoration, not evidence.
+
+    The control matters as much as the mutation: an untouched pair must read
+    matches=True, or a helper that always returns False would pass this test.
+    """
+    report = tmp_path / "eval_report.md"
+    report.write_bytes(b"# Evaluation report\n\nFalse-allow: 0.\n")
+    digest = hashlib.sha256(report.read_bytes()).digest()
+    (tmp_path / "eval_report.md.ots").write_bytes(
+        dashboard.OTS_MAGIC + bytes([1, dashboard.OTS_SHA256]) + digest + b"\x00pending")
+    monkeypatch.setattr(dashboard, "ROOT", tmp_path)
+
+    assert dashboard.ots_proof()["matches"] is True
+
+    report.write_bytes(b"# Evaluation report\n\nFalse-allow: 1.\n")
+    broken = dashboard.ots_proof()
+    assert broken["matches"] is False
+    assert broken["digest"] != broken["stamped"]
+
+
+def test_a_missing_or_malformed_proof_is_an_empty_state_not_a_crash(tmp_path, monkeypatch):
+    """/evidence runs on the host that moves money, so an unreadable artefact
+    shows the panel's empty state rather than 500ing the process (model_rows'
+    rule, applied to the second committed artefact that can go missing)."""
+    monkeypatch.setattr(dashboard, "ROOT", tmp_path)
+    assert dashboard.ots_proof() is None                      # neither file
+
+    (tmp_path / "eval_report.md").write_bytes(b"report\n")
+    assert dashboard.ots_proof() is None                      # report but no proof
+
+    (tmp_path / "eval_report.md.ots").write_bytes(b"not an OpenTimestamps file")
+    assert dashboard.ots_proof() is None                      # proof with a wrong magic
+
+    (tmp_path / "eval_report.md.ots").write_bytes(dashboard.OTS_MAGIC + b"\x01\x08short")
+    assert dashboard.ots_proof() is None                      # right magic, truncated digest

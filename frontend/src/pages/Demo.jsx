@@ -14,7 +14,7 @@ import { Disclosure, ErrorLine, Marginal, Note, Panel, VerdictMark } from '../co
 // transform fought the browser's own movement, and the whole apparatus existed only
 // to show four things that fit on four plates. The plates are what the other six pages
 // are drawn with, so the demo is now the same drawing rather than an exception
-// inside it. Every word of copy is unchanged, and so is every call it makes.
+// inside it. Every call it makes is unchanged.
 
 const STAGES = 4;
 
@@ -29,8 +29,8 @@ const CHECKPOINTS = [
 ];
 
 const PREVIEW = [
-  ['Headphones', '₹1,800', 'Likely purchased', true],
-  ['Monitor arm', '₹2,000', 'Likely purchased', true],
+  ['Headphones', '₹1,800', 'Likely allowed', true],
+  ['Monitor arm', '₹2,000', 'Likely allowed', true],
   ['Second monitor arm', '₹2,000', 'Depends on budget left', false],
 ];
 
@@ -42,7 +42,7 @@ const TECHNICAL = [
   ['/evidence', 'Check the proof', 'The numbers, and how to re-run them'],
 ];
 
-const OUTCOME_LABEL = { ALLOW: 'Purchased', HOLD: 'Ask you', BLOCK: 'Blocked' };
+const OUTCOME_LABEL = { ALLOW: 'Allowed', HOLD: 'Ask you', BLOCK: 'Blocked' };
 
 // Razorpay's Checkout script is the one thing on this site fetched from another
 // origin, and only after a visitor asks for the ₹100 test payment.
@@ -164,7 +164,7 @@ export default function Demo() {
 
   async function runShop() {
     setShopping(true);
-    setShopState({ text: 'The AI is sending six purchase requests…' });
+    setShopState({ text: 'Sending six fixed purchase requests…' });
     try {
       const data = await api('/api/shop', {});
       setResults(data.results);
@@ -203,13 +203,13 @@ export default function Demo() {
         name: 'reserve-gate',
         description: order.display_item,
         handler: async response => {
-          setLiveState({ text: 'Card accepted. Taking the ₹100 through the gate…' });
+          setLiveState({ text: 'Test payment accepted. Taking the ₹100 through the gate…' });
           try {
             const done = await api('/api/live-checkout/capture',
                                    { payment_id: response.razorpay_payment_id });
             setLiveState({
               text: done.captured
-                ? 'Done. The card was charged and ₹100 came off your balance for real.'
+                ? 'Done. The test payment was captured and ₹100 came off your demo balance.'
                 : 'The charge did not go through.',
             });
           } catch (err) {
@@ -233,13 +233,10 @@ export default function Demo() {
       : <p className="demo-said" aria-live="polite">{value.text}</p>)
     : null;
 
-  // The revenue half of the brief, counted rather than asserted. Reserve Pay's own
-  // selling point is "no need for repeated PIN prompts", so every purchase the block
-  // let through is one prompt the shopper never saw.
-  const bought = results ? results.filter(r => r.outcome === 'ALLOW') : [];
+  const allowed = results ? results.filter(r => r.outcome === 'ALLOW') : [];
   const tally = results && {
-    count: bought.length,
-    paise: bought.reduce((sum, r) => sum + r.paise, 0),
+    count: allowed.length,
+    paise: allowed.reduce((sum, r) => sum + r.paise, 0),
     refused: results.filter(r => r.outcome === 'BLOCK').length,
   };
 
@@ -261,7 +258,7 @@ export default function Demo() {
         <span className="title-block__tick" data-at="tr" aria-hidden="true" />
 
         <Marginal>Guided demo · about 2 minutes</Marginal>
-        <h1 id="demo-title">Follow one AI purchase<br />through the gate.</h1>
+        <h1 id="demo-title">Follow purchase requests<br />through the gate.</h1>
         <p className="title-block__lede">
           Scroll the route. Each checkpoint tells you what will happen before you act.
         </p>
@@ -289,7 +286,7 @@ export default function Demo() {
         <Panel
           id="step-1" data-step="1"
           mark="01 / Set limits"
-          title="You decide how much authority the AI gets."
+          title="You decide how much authority the buyer gets."
           intro="These values are rupees. Applying them creates a fresh demo budget."
         >
           <form onSubmit={applyLimits}>
@@ -317,7 +314,7 @@ export default function Demo() {
                 <span className="limits-card__range">≤ ₹{groupRupees(limits.approval_over || 0)}</span>
               </div>
               <p className="limits-card__rule">Autonomous pass</p>
-              <p className="limits-card__desc">Purchases under your threshold execute instantly with zero friction.</p>
+              <p className="limits-card__desc">Requests under your threshold pass automatically.</p>
             </div>
 
             <div className="limits-card is-hold">
@@ -343,9 +340,10 @@ export default function Demo() {
         <Panel
           id="step-2" data-step="2"
           mark="02 / Preview"
-          title="The AI plans a desk setup."
-          intro="Expected — small purchases pass, purchases above your approval line wait, and
-                 anything above the purchase limit is blocked."
+          title="A fixed basket tests the gate."
+          intro="This deterministic walkthrough sends the same six requests every time. No AI
+                 model chooses these items. Small requests pass, larger ones wait for approval,
+                 and anything above the purchase limit is blocked."
         >
           <ul className="basket">
             {PREVIEW.map(([name, price, verdict, good]) => (
@@ -357,7 +355,7 @@ export default function Demo() {
             ))}
           </ul>
           <Button variant="primary" className="mt-6" onClick={runShop} disabled={shopping}>
-            Run the AI shopping trip →
+            Run the fixed shopping test →
           </Button>
           <State value={shopState} />
         </Panel>
@@ -367,20 +365,20 @@ export default function Demo() {
           mark="03 / Decisions"
           title="Every result says what happened and why."
           intro={<>
-            <strong>Purchased</strong> came out of your budget. <strong>Ask you</strong>{' '}
-            is set aside and waiting for your approval. <strong>Blocked</strong> never got
-            anywhere near a payment.
+            <strong>Allowed</strong> is reserved against your demo budget. <strong>Ask you</strong>{' '}
+            is set aside and waiting for your approval. <strong>Blocked</strong> never reaches
+            a payment network.
           </>}
         >
           {tally && (
             <div className="reading is-allow">
-              <h3>Approved purchase volume</h3>
+              <h3>Allowed request volume</h3>
               <p className="reading__figure">
-                {tally.count} {tally.count === 1 ? 'sale' : 'sales'} · {money(tally.paise)}
+                {tally.count} {tally.count === 1 ? 'request' : 'requests'} · {money(tally.paise)}
               </p>
               <Note className="mt-3">
-                {tally.count} {tally.count === 1 ? 'payment' : 'payments'} processed automatically
-                under your budget limit.
+                {tally.count} {tally.count === 1 ? 'request was' : 'requests were'} allowed and
+                reserved against your demo budget. No payment is created in this fixed test.
                 {tally.refused > 0 && ` ${tally.refused} refused, and a refusal never
                 reaches Razorpay.`}
               </Note>
@@ -391,8 +389,8 @@ export default function Demo() {
             <div className="decisions-pending">
               <div className="decisions-pending__intro">
                 <div>
-                  <p className="decisions-pending__title">Shopping trip awaiting evaluation</p>
-                  <Note>Run the shopping trip in step 02 above to evaluate these items against your limits and see live decision telemetry.</Note>
+                  <p className="decisions-pending__title">Fixed shopping test awaiting evaluation</p>
+                  <Note>Run the fixed test in step 02 to evaluate these requests against your limits and see the policy decisions.</Note>
                 </div>
               </div>
 
@@ -443,12 +441,12 @@ export default function Demo() {
 
         <Panel
           id="step-4" data-step="4"
-          mark="04 / Pay for real"
-          title="Now put a real card through it."
-          intro="This is Razorpay's real payment window, in test mode, for a fixed ₹100. No real
-                 money moves. Once the card is charged, your balance drops by ₹100 and the whole
-                 thing is written down in a log nobody can edit afterwards. If the payment window
-                 will not open, a recorded run of the same purchase is linked below."
+          mark="04 / Test payment"
+          title="Complete a real Razorpay test-mode checkout."
+          intro="This fixed ₹100 verification purchase uses Razorpay's real Checkout interface
+                 with a test card. No real money moves, and no AI chooses this purchase. After
+                 capture, your demo balance drops by ₹100 and the event is written to the audit
+                 log. If Checkout will not open, a recorded run is linked below."
         >
           <div className="reading checkout-box">
             <div className="checkout-box__header">
@@ -471,8 +469,8 @@ export default function Demo() {
           id="technical"
           mark="Optional / for the curious"
           title="Don't take our word for it."
-          intro="Nothing below is a slideshow. Each page runs the same gate you just used, live, and
-                 lets you attack it yourself."
+          intro="Each page exposes either a live check or a committed artifact and labels which
+                 one you are seeing."
         >
           <ul className="onward">
             {TECHNICAL.map(([href, title, hint]) => (
@@ -486,9 +484,9 @@ export default function Demo() {
           </ul>
           <Disclosure summary="Want to shop for something else?" className="mt-8">
             <Note>
-              This walkthrough buys the same desk setup every time, so the results are easy to
-              follow. To choose your own items, or to write the AI's instructions yourself, use
-              the pages above.
+              This walkthrough sends the same desk-setup requests every time, so the results are
+              repeatable. It does not call an AI model. To choose your own request, use the page
+              below.
             </Note>
             <p className="mt-3"><a href="/attack">Build a custom request →</a></p>
           </Disclosure>

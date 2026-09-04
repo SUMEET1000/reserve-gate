@@ -140,9 +140,9 @@ in the same hash-chained log; they never call Razorpay.
 The final checkpoint can create one fixed ₹100 Razorpay test-mode order and
 capture its returned payment through the same authorization, reservation,
 upstream, and settlement functions used by MCP. It accepts no amount, tool,
-receipt, target order, or upstream URL from the browser. A separate 24-hour
-cookie permits one order attempt per browser, and an atomic SQLite reservation
-caps the whole server at 20 attempts per UTC day. The route refuses production
+receipt, target order, or upstream URL from the browser. A rolling 24-hour
+window permits three order attempts per browser, and an atomic SQLite reservation
+caps the whole server at 60 attempts per UTC day. The route refuses production
 keys. Without test credentials or capacity it keeps the sandbox usable and
 links to the committed recorded payment trace.
 

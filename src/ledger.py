@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS webhook_events (
 
 CREATE TABLE IF NOT EXISTS live_checkout_slots (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  visitor_id  TEXT NOT NULL UNIQUE,
+  visitor_id  TEXT NOT NULL,
   caller_id   TEXT NOT NULL,
   day         TEXT NOT NULL,
   attempted_at TEXT NOT NULL,
@@ -203,6 +203,27 @@ def connect(db: str | None = None) -> sqlite3.Connection:
     for column, check, statement in MIGRATIONS:
         if column not in {row["name"] for row in conn.execute(check)}:
             conn.execute(statement)
+    if any(row["unique"] for row in conn.execute("PRAGMA index_list(live_checkout_slots)")):
+        conn.executescript("""
+            BEGIN IMMEDIATE;
+            DROP INDEX IF EXISTS live_checkout_slots_day;
+            ALTER TABLE live_checkout_slots RENAME TO live_checkout_slots_single;
+            CREATE TABLE live_checkout_slots (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              visitor_id TEXT NOT NULL,
+              caller_id TEXT NOT NULL,
+              day TEXT NOT NULL,
+              attempted_at TEXT NOT NULL,
+              status TEXT NOT NULL CHECK (status IN
+                    ('pending', 'created', 'capturing', 'captured', 'failed')),
+              order_id TEXT
+            );
+            INSERT INTO live_checkout_slots
+              SELECT * FROM live_checkout_slots_single;
+            DROP TABLE live_checkout_slots_single;
+            CREATE INDEX live_checkout_slots_day ON live_checkout_slots(day);
+            COMMIT;
+        """)
     return conn
 
 

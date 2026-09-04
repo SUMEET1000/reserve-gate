@@ -35,7 +35,7 @@ import secrets
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from starlette.responses import JSONResponse, PlainTextResponse, Response
 
@@ -251,7 +251,8 @@ _LAST_EVENT: dict[str, str] = {}
 # proves the HMAC path, and Razorpay's real signing secret has no business being
 # reachable from a public page.
 _DEMO_SECRET = secrets.token_urlsafe(32)
-LIVE_DAILY_CAP = 20
+LIVE_BROWSER_CAP = 3
+LIVE_DAILY_CAP = 60
 LIVE_AMOUNT = 10_000
 _LIVE_AVAILABLE = _LIVE_ORDER = _LIVE_CAPTURE = None
 
@@ -292,25 +293,29 @@ def live_reply(payload, token: str, demo_token: str, request, status: int = 200)
     return r
 
 
-def reserve_live_slot(conn, visitor: str, caller: str) -> tuple[bool, str]:
-    """Atomically claim one of today's 20 public Razorpay attempts."""
-    day, now = datetime.now(timezone.utc).date().isoformat(), ledger.iso(ledger.now_utc())
+def reserve_live_slot(conn, visitor: str, caller: str) -> tuple[bool, str, int | None]:
+    """Atomically claim a browser and public Razorpay attempt."""
+    moment = ledger.now_utc()
+    day, now = moment.date().isoformat(), ledger.iso(moment)
+    cutoff = ledger.iso(moment - timedelta(hours=24))
     conn.execute("BEGIN IMMEDIATE")
     try:
-        if conn.execute("SELECT 1 FROM live_checkout_slots WHERE visitor_id = ?",
-                        (visitor,)).fetchone():
-            reason = "This browser has already used its 24-hour live checkout"
+        used = conn.execute("SELECT COUNT(*) c FROM live_checkout_slots"
+                            " WHERE visitor_id = ? AND attempted_at > ?",
+                            (visitor, cutoff)).fetchone()["c"]
+        if used >= LIVE_BROWSER_CAP:
+            reason = f"This browser has used its {LIVE_BROWSER_CAP} live checkouts in 24 hours"
             conn.execute("ROLLBACK")
-            return False, reason
+            return False, reason, None
         if conn.execute("SELECT COUNT(*) c FROM live_checkout_slots WHERE day = ?",
                         (day,)).fetchone()["c"] >= LIVE_DAILY_CAP:
             conn.execute("ROLLBACK")
-            return False, "Today's 20 public test checkouts have been used"
-        conn.execute("INSERT INTO live_checkout_slots"
-                     " (visitor_id, caller_id, day, attempted_at, status)"
-                     " VALUES (?, ?, ?, ?, 'pending')", (visitor, caller, day, now))
+            return False, f"Today's {LIVE_DAILY_CAP} public test checkouts have been used", None
+        slot = conn.execute("INSERT INTO live_checkout_slots"
+                            " (visitor_id, caller_id, day, attempted_at, status)"
+                            " VALUES (?, ?, ?, ?, 'pending')", (visitor, caller, day, now)).lastrowid
         conn.execute("COMMIT")
-        return True, ""
+        return True, "", slot
     except Exception:
         conn.execute("ROLLBACK")
         raise
@@ -329,7 +334,7 @@ async def api_live_order(request):
     visitor, caller, cfg = live_visitor(token), caller_of(demo_token), config_of(demo_token)
     conn = ledger.connect()
     try:
-        ok, reason = reserve_live_slot(conn, visitor, caller)
+        ok, reason, slot = reserve_live_slot(conn, visitor, caller)
     finally:
         conn.close()
     if not ok:
@@ -343,14 +348,14 @@ async def api_live_order(request):
         conn = ledger.connect()
         try:
             conn.execute("UPDATE live_checkout_slots SET status = 'created', order_id = ?"
-                         " WHERE visitor_id = ? AND status = 'pending'", (order_id, visitor))
+                         " WHERE id = ? AND status = 'pending'", (order_id, slot))
         finally:
             conn.close()
     except Exception:
         conn = ledger.connect()
         try:
             conn.execute("UPDATE live_checkout_slots SET status = 'failed'"
-                         " WHERE visitor_id = ? AND status = 'pending'", (visitor,))
+                         " WHERE id = ? AND status = 'pending'", (slot,))
         finally:
             conn.close()
         return live_reply({"error": "Razorpay could not create the test order",
@@ -371,11 +376,12 @@ async def api_live_capture(request):
     conn = ledger.connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT caller_id, order_id FROM live_checkout_slots"
-                           " WHERE visitor_id = ? AND status = 'created'", (visitor,)).fetchone()
+        row = conn.execute("SELECT id, caller_id, order_id FROM live_checkout_slots"
+                           " WHERE visitor_id = ? AND status = 'created'"
+                           " ORDER BY id DESC LIMIT 1", (visitor,)).fetchone()
         if row:
             conn.execute("UPDATE live_checkout_slots SET status = 'capturing'"
-                         " WHERE visitor_id = ?", (visitor,))
+                         " WHERE id = ?", (row["id"],))
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
@@ -393,8 +399,8 @@ async def api_live_capture(request):
                            "recorded_proof": True}, token, demo_token, request, 502)
     conn = ledger.connect()
     try:
-        conn.execute("UPDATE live_checkout_slots SET status = 'captured' WHERE visitor_id = ?",
-                     (visitor,))
+        conn.execute("UPDATE live_checkout_slots SET status = 'captured' WHERE id = ?",
+                     (row["id"],))
         block = block_json(conn, row["caller_id"])
     finally:
         conn.close()

@@ -16,6 +16,7 @@ import json
 import pathlib
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from starlette.applications import Starlette
@@ -341,7 +342,7 @@ def test_live_checkout_rejects_a_live_key_and_caller_controlled_amount(c, monkey
     assert called == []
 
 
-def test_one_live_order_per_browser_and_cross_browser_capture_is_refused(app, monkeypatch):
+def test_three_live_orders_per_browser_and_cross_browser_capture_is_refused(app, monkeypatch):
     _test_key(monkeypatch)
 
     async def fake(tool, args):
@@ -350,7 +351,7 @@ def test_one_live_order_per_browser_and_cross_browser_capture_is_refused(app, mo
 
     monkeypatch.setattr(server, "call_razorpay", fake)
     a, b = other(app), other(app)
-    assert a.post("/api/live-checkout/order", json={}).status_code == 200
+    assert [a.post("/api/live-checkout/order", json={}).status_code for _ in range(3)] == [200] * 3
     assert a.post("/api/live-checkout/order", json={}).status_code == 429
     assert b.post("/api/live-checkout/capture", json={"payment_id": "pay_public123"}).status_code == 404
 
@@ -368,9 +369,56 @@ def test_live_daily_cap_is_atomic(tmp_path, monkeypatch):
         finally:
             conn.close()
 
-    with ThreadPoolExecutor(max_workers=24) as pool:
-        results = list(pool.map(claim, range(24)))
-    assert sum(results) == dashboard.LIVE_DAILY_CAP
+    for n in range(59):
+        assert claim(n)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(claim, range(59, 67)))
+    assert sum(results) == 1
+
+
+def test_live_browser_cap_is_a_rolling_24_hours(tmp_path, monkeypatch):
+    db = str(tmp_path / "browser-cap.db")
+    moment = datetime(2026, 9, 4, tzinfo=timezone.utc)
+    monkeypatch.setattr(ledger, "now_utc", lambda: moment)
+    conn = ledger.connect(db)
+    try:
+        assert [dashboard.reserve_live_slot(conn, "visitor", "caller")[0]
+                for _ in range(3)] == [True] * 3
+        assert dashboard.reserve_live_slot(conn, "visitor", "caller")[0] is False
+        moment += timedelta(hours=24, seconds=1)
+        assert dashboard.reserve_live_slot(conn, "visitor", "caller")[0] is True
+    finally:
+        conn.close()
+
+
+def test_connect_migrates_the_single_live_checkout_slot(tmp_path):
+    db = str(tmp_path / "old-slots.db")
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        CREATE TABLE live_checkout_slots (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          visitor_id TEXT NOT NULL UNIQUE,
+          caller_id TEXT NOT NULL,
+          day TEXT NOT NULL,
+          attempted_at TEXT NOT NULL,
+          status TEXT NOT NULL,
+          order_id TEXT
+        );
+        INSERT INTO live_checkout_slots
+          (visitor_id, caller_id, day, attempted_at, status)
+          VALUES ('visitor', 'caller', '2026-09-04', '2026-09-04T00:00:00.000000Z', 'failed');
+    """)
+    conn.close()
+
+    conn = ledger.connect(db)
+    try:
+        conn.execute("INSERT INTO live_checkout_slots"
+                     " (visitor_id, caller_id, day, attempted_at, status)"
+                     " VALUES ('visitor', 'caller', '2026-09-04',"
+                     " '2026-09-04T00:01:00.000000Z', 'pending')")
+        assert conn.execute("SELECT COUNT(*) FROM live_checkout_slots").fetchone()[0] == 2
+    finally:
+        conn.close()
 
 
 # ------------------------------------------------------------------- policy

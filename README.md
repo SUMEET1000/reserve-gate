@@ -307,8 +307,16 @@ pip install opentimestamps-client
 ots verify eval_report.md.ots          # run it beside eval_report.md
 ```
 
+[audit_sample.jsonl](audit_sample.jsonl) is stamped the same way, so the
+settlement record and the evaluation are both anchored:
+
+```console
+ots verify audit_sample.jsonl.ots
+```
+
 Stamped 4 Sept 2026 over sha256
-`065cbdfa98acc053a313118c89aff4a3bdc3ab286359a534c1fd06e8eac2afcf`. **The Bitcoin
+`065cbdfa98acc053a313118c89aff4a3bdc3ab286359a534c1fd06e8eac2afcf` and
+`851db90523dad116f8eb1389ef9c084e9d5da3becc97fe1846ad4e516efbb10b`. **The Bitcoin
 attestation is still pending** — it attaches within about a day, and until then
 `ots verify` reports *pending confirmation* and exits non-zero. Run
 `ots upgrade eval_report.md.ots` to pull the block in once it lands. What the
@@ -387,12 +395,14 @@ attacker rather than by adding an HMAC:
 |---|---|---|
 | The AI agent | No. It speaks MCP and never touches the file. | This is the attacker the gate exists for, and the chain is more than enough for it. |
 | A shell on the deployed instance | Yes | They also hold `RAZORPAY_KEY_SECRET`, so they can skip the gate and move money directly. Forging the log is a harder route to something they already have. |
-| The author | Yes | No key fixes this, because the author would hold the key too. The answer is reproducibility: a reader can run `harness/mutate.py` from a clean clone, with no credential and no network, and regenerate every number in `eval_report.md`. |
+| The author | Yes, but not silently | No key fixes this, because the author would hold the key too. Two things do. Reproducibility: a reader can run `harness/mutate.py` from a clean clone, with no credential and no network, and regenerate every number in `eval_report.md`. And the OpenTimestamps proof above, which is the part git alone could not give — a rewritten log needs a rewritten tail digest, that digest lives in `eval_report.md`, and re-stamping it produces a proof **dated after** the original. The author cannot manufacture an earlier one. |
 
 An HMAC was considered and rejected. Its key would live beside the process
 writing the log, where an attacker who can rewrite the file already has it, and a
 `verify()` that needs a secret is one a reader with a clone cannot run — which is
-the only reason the log exists. Reproducible beats timestamped.
+the only reason the log exists. Reproducible beats keyed — and since 4 Sept 2026
+the log is timestamped as well, which is the one thing reproducibility does not
+supply on its own: a date nobody in this project can move.
 
 The audit covers requests that reach application code. Schema-invalid MCP
 arguments can be rejected by the transport before a tool runs, so they have no
@@ -446,8 +456,12 @@ token and does not implement an OAuth authorization server.
   repository already holds.
 - Pending approvals live in process memory. A restart forgets the approval link;
   the SQLite reservation still expires safely.
-- The hash chain does not stop a process owner from rewriting the whole log. What
-  it does and does not cover is set out by attacker under *Audit-chain scope*.
+- The hash chain does not stop a process owner from rewriting the whole log, and
+  no unkeyed chain can. What it does and does not cover is set out by attacker
+  under *Audit-chain scope*. **Reduced 4 Sept 2026, not eliminated:** the tail
+  digest now sits inside an OpenTimestamps-proofed file, so a rewrite can only be
+  published under a proof dated later than the original. That closes backdating.
+  It does not prove the log was never rewritten *before* it was stamped.
 - A caller that omits `idempotency_key` inherits a five-minute collapse between
   two identical-amount purchases. See the R7 boundary above.
 - Manual unfreeze does not reconcile or rebuild payment history.
@@ -463,9 +477,13 @@ token and does not implement an OAuth authorization server.
   sleep or redeploy resets its daily counter; this is an abuse brake for a demo,
   not durable billing infrastructure.
 - The keepalive workflow depends on GitHub's scheduler firing at least once a
-  day. Measured 30 August 2026, GitHub delivered about 5% of the runs the old
-  cron asked for. One landing now covers an afternoon, but nothing here can make
-  the scheduler land. Warm the URL by hand before anything that matters.
+  day, and nothing here can make it land. The old cron asked for 90 events a day
+  and GitHub delivered about 5% of them (measured 30 August 2026), which against
+  a 15-minute spin-down is the same as no workflow. It now asks for hourly
+  attempts and whichever one lands loops until a fixed UTC hour, so a single
+  landing covers an afternoon; `gh run list --workflow=keepalive.yml` showed
+  about four landings a day over 1-3 September 2026. That is a mitigation, not a
+  guarantee. Warm the URL by hand before anything that matters.
 - Dependency and policy tests are deterministic; the final dashboard webhook
   replay is the separate live integration proof.
 - **Requests are not cryptographically signed.** A caller is identified by its

@@ -123,3 +123,14 @@ implements those semantics rather than calling them.
 holding the raw Razorpay key can call `mcp.razorpay.com` directly and bypass the
 gate. The control assumes the agent is given a `reserve-gate` token and never the
 underlying credential.
+
+The evidence is anchored outside this repository. `eval_report.md` and
+`audit_sample.jsonl` each carry an OpenTimestamps proof committed beside them,
+which is what the hash chain on its own cannot supply: the chain catches an
+edited, deleted or reordered record, and a wholesale rewrite is caught only by an
+anchor the author does not control. `/api/evidence` **recomputes** the report's
+digest on each request and compares it to the digest its `.ots` commits to, so a
+report regenerated without being re-stamped reports as unproven rather than the
+page printing a hash that no longer binds anything. The consequence for anyone
+working here: regenerating `eval_report.md` means re-stamping it in the same
+change.

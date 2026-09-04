@@ -2,6 +2,9 @@
 
 **Live demo:** <https://reserve-gate.onrender.com>
 
+**Not an official Razorpay product and not affiliated with Razorpay in any way.
+A personal project built against their public test-mode APIs.**
+
 **An AI agent's spending limit should not be a sentence in a prompt. It should be
 a balance that runs out.**
 

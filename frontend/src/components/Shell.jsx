@@ -38,6 +38,7 @@ export function Brand({ className = '' }) {
 export function SiteHeader({ children }) {
   return (
     <header className="site-header">
+      <a href="#main-content" className="skip-link">Skip to main content</a>
       <Brand />
       {children}
     </header>
@@ -58,11 +59,11 @@ export function SiteFooter({ children }) {
 // doing badly: it was a row of underlined labels, which is chrome from a
 // product this is not. Here the index is the sheet list, the current sheet is
 // the one whose number is inked, and the order is the order of the routes.
-const SHEETS = ['/', '/attack', '/mutate', '/trace', '/rules', '/evidence'];
+const SHEETS = ['/attack', '/mutate', '/trace', '/rules', '/evidence'];
 
 function sheetNo(href) {
   const i = SHEETS.indexOf(href);
-  return i < 0 ? '' : `${String(i + 1).padStart(2, '0')} / 06`;
+  return i < 0 ? '' : `${String(i + 1).padStart(2, '0')} / 05`;
 }
 
 function SheetIndex({ current }) {
@@ -107,13 +108,13 @@ export function ProofPage({ title, lede, current, footer, children, brand, stats
 
       <SheetIndex current={current} />
 
-      <header className="title-block">
+      <section aria-labelledby="sheet-title" className="title-block">
         {/* Registration ticks. The same four corner marks the landing sheet
             carries, so a visitor arriving here from it is on the same paper. */}
         <span className="title-block__tick" data-at="tl" aria-hidden="true" />
         <span className="title-block__tick" data-at="tr" aria-hidden="true" />
 
-        <h1>{title}</h1>
+        <h1 id="sheet-title">{title}</h1>
         <p className="title-block__lede">{lede}</p>
 
         {/* The strip a drawing puts under its title: sheet number first, then
@@ -134,9 +135,9 @@ export function ProofPage({ title, lede, current, footer, children, brand, stats
         </dl>
 
         {brand && <div className="title-block__brand">{brand}</div>}
-      </header>
+      </section>
 
-      <main className="sheet">{children}</main>
+      <main id="main-content" tabIndex="-1" className="sheet">{children}</main>
 
       {current === '/evidence' && (
         <section className="ots-proof-slot" aria-labelledby="ots-proof-title">
@@ -161,7 +162,7 @@ export function ProofPage({ title, lede, current, footer, children, brand, stats
 export function RazorpayBrand({ children }) {
   return (
     <div className="rzp-chip">
-      <img src="/razorpay-logo.png" alt="" />
+      <img src="/razorpay-logo.png" width="18" height="18" decoding="async" loading="lazy" alt="Razorpay" />
       <span>{children}</span>
     </div>
   );

@@ -1,0 +1,41 @@
+# The 479-test suite, on every push and pull request. It ran only on Sumeet's
+# machine until 3 Sept 2026, which meant a judge cloning the repo was the first
+# person to find out if it was broken.
+#
+# requirements-llm.txt is deliberately left out, the same way render.yaml keeps
+# it separate: nothing under tests/ imports a model SDK, and installing one here
+# would hide a test that accidentally started needing it.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          # No version is pinned anywhere else in the repo; this matches the
+          # interpreter the suite is developed against.
+          python-version: '3.13'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: pytest -q
+
+  # The money display self-check. It asserts what the customer is shown for a
+  # refusal and for a limit box, against the same formatters the pages import,
+  # and it lived unrun in the repo until 4 Sept 2026 - a passing test nobody
+  # executes is the same as no test. Node only: it imports one module and needs
+  # no browser and no install.
+  money-display:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node test-money.mjs
+        working-directory: frontend

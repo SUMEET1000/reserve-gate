@@ -6,7 +6,7 @@ import {
   Skeleton, useAsync,
 } from '../components/ui.jsx';
 
-// Sheet 06 - the reports. This is the last sheet in the set, so it is where the
+// Sheet 05 - the reports. This is the last sheet in the set, so it is where the
 // arrangement drawing belongs: the old version built it out of nested CSS boxes,
 // which is a diagram made of chrome. It is an SVG now, drawn in hairlines with
 // one crimson mark, and 160 lines of stylesheet went with the boxes.
@@ -50,11 +50,18 @@ function Figure({ value, label, tone }) {
 // writes to the chain running along the bottom. Crimson is spent only on the
 // boundary itself, because the boundary is the whole claim.
 function ArchitectureFlow() {
-  const hair = { fill: 'none', stroke: 'currentColor', strokeWidth: 1 };
+  const hair = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.5 };
+  const narrowJoin = (
+    <svg className="arrangement__join arrangement__join--narrow" viewBox="0 0 600 46" aria-hidden="true"
+         preserveAspectRatio="none">
+      <path d="M300 0v46" {...hair} />
+      <path d="m294 40 6 6 6-6" {...hair} />
+    </svg>
+  );
   const SOURCES = [
     ['Buyer agent', 'Scripted or model-driven MCP call'],
     ['MCP desktop client', 'Bearer-authenticated remote transport'],
-    ["Judge's browser", 'Cookie-scoped sandbox; no bearer token'],
+    ["Judge's browser", 'Cookie-scoped sandbox, no bearer token'],
   ];
   const CORE = [
     ['Money tools', 'Create and capture enter policy. Fetches are logged reads.'],
@@ -69,7 +76,7 @@ function ArchitectureFlow() {
   return (
     <figure className="arrangement" aria-labelledby="system-flow-title">
       <figcaption id="system-flow-title">
-        Shape: every request passes through one gate
+        Shape — every request passes through one gate
       </figcaption>
 
       <div className="arrangement__rank">
@@ -80,11 +87,12 @@ function ArchitectureFlow() {
 
       {/* Three runs converging on one boundary. Drawn, so the convergence is
           visible as convergence and not implied by two stacked rows. */}
-      <svg className="arrangement__join" viewBox="0 0 600 46" aria-hidden="true"
+      <svg className="arrangement__join arrangement__join--wide" viewBox="0 0 600 46" aria-hidden="true"
            preserveAspectRatio="none">
         <path d="M100 0v18h200v28M300 0v46M500 0v18H300" {...hair} />
         <path d="m294 40 6 6 6-6" {...hair} />
       </svg>
+      {narrowJoin}
 
       <div className="arrangement__gate">
         <div className="arrangement__gate-head">
@@ -98,13 +106,14 @@ function ArchitectureFlow() {
         </div>
       </div>
 
-      <svg className="arrangement__join" viewBox="0 0 600 46" aria-hidden="true"
+      <svg className="arrangement__join arrangement__join--wide" viewBox="0 0 600 46" aria-hidden="true"
            preserveAspectRatio="none">
         <path d="M300 0v18h-200v28M300 18v28M300 18h200v28" {...hair} />
         {[100, 300, 500].map(x => (
           <path key={x} d={`m${x - 6} 40 6 6 6-6`} {...hair} />
         ))}
       </svg>
+      {narrowJoin}
 
       <div className="arrangement__rank">
         {OUT.map(([t, s, tone]) => (
@@ -145,12 +154,12 @@ export default function Evidence() {
   return (
     <ProofPage
       current="/evidence"
-      title="Check my work"
-      lede={'The claim is that nothing which should have been refused ever got through. That is '
-        + 'the kind of claim a single counterexample destroys — so this page hands you the '
-        + 'tools to go looking for one.'}
+      title="Empirical verification and evidence"
+      lede={'The security guarantee is that nothing which should have been refused ever gets through. '
+        + 'A single counterexample destroys that claim, so this page provides the '
+        + 'verifiable reports and tools to test it.'}
       stats={h ? [['Cases', h.cases], ['False allow', h.allow]] : []}
-      footer={'One thing this does not protect: reserve-gate limits what the AI can spend, not '
+      footer={'One thing this does not protect — reserve-gate limits what the AI can spend, not '
         + 'what the shop owner can. Anyone holding the raw Razorpay key can skip this gate '
         + 'entirely and pay directly. The whole design assumes the AI is given a reserve-gate '
         + 'key and never the real one.'}
@@ -228,7 +237,7 @@ export default function Evidence() {
               <h3>After one character changed on line {tamper.data.edited_line}</h3>
               <p className="reading__body">
                 {tamper.data.after.verified
-                  ? 'Still intact — which would be the failure.'
+                  ? 'Still intact, which would be the failure.'
                   : 'Caught, at line ' + tamper.data.after.bad_line + '.'}
               </p>
               <Note className="mt-2">{tamper.data.note}</Note>
@@ -240,7 +249,7 @@ export default function Evidence() {
           <Note>
             A secret would have to live on the same machine as the program writing the log, so
             anyone able to rewrite the file would already hold it. Worse, checking the log would
-            then need that secret — and the entire point is that a stranger with a copy of this
+            then need that secret, and the entire point is that a stranger with a copy of this
             repository can check it themselves. Instead the final fingerprint is published in
             the committed report, so a rewritten log gives a different answer and the
             disagreement is public.
@@ -348,7 +357,7 @@ export default function Evidence() {
 
       <Panel
         title="The full reports"
-        intro="Everything above in its raw, committed form. These are long on purpose — they are
+        intro="Everything above in its raw, committed form. These are long on purpose because they are
                meant to be checked, not read."
       >
         <Disclosure summary="The test results" hint="150 purchases">

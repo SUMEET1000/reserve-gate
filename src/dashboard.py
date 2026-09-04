@@ -58,6 +58,16 @@ PAGES = {
     "/": "index.html", "/demo": "demo.html", "/attack": "attack.html", "/mutate": "mutate.html",
     "/trace": "trace.html", "/rules": "rules.html", "/evidence": "evidence.html",
     "/app.css": "app.css", "/app.js": "app.js", "/razorpay-logo.png": "razorpay-logo.png",
+    # Two icons and no more. The SVG is what every current browser takes, and
+    # the 64px PNG is the alternate for the ones that will not read an SVG icon.
+    # A 32px copy and a second 64px copy that was byte-identical to favicon.png
+    # were deleted on 4 Sept 2026: nothing linked either, and a routed file that
+    # no page asks for is one a later session assumes is load-bearing.
+    "/favicon.svg": "favicon.svg", "/favicon.png": "favicon.png",
+    # The hero's three.js chunk, loaded by / alone. Named here rather than
+    # matched by prefix, so the allowlist stays closed; vite.config.js pins the
+    # filename to match.
+    "/app-HeroScene.js": "app-HeroScene.js",
     # The self-hosted faces, latin subset, named one by one because this
     # table is a closed allowlist and a glob here would be a directory to walk.
     # Self-hosted rather than fetched from Google's CDN: one fewer host to reach
@@ -65,18 +75,16 @@ PAGES = {
     # working with no outbound request at all.
     **{f"/fonts/{f}": f"fonts/{f}" for f in (
         "Cormorant-normal-500.woff2",
-        "MonaSans-normal-400.woff2", "MonaSans-normal-500.woff2",
-        "MonaSans-normal-700.woff2",
-        "Archivo-normal-400.woff2", "Archivo-normal-500.woff2",
-        "Archivo-normal-700.woff2",
+        "MonaSans-normal-400.woff2", "MonaSans-normal-700.woff2",
         "AzeretMono-normal-400.woff2", "AzeretMono-normal-500.woff2",
         "AzeretMono-normal-700.woff2",
         "BarlowCondensed-normal-700.woff2",
+        "BigShouldersStencil-normal-800.woff2",
     )},
 }
 MEDIA = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
          ".js": "text/javascript; charset=utf-8", ".png": "image/png",
-         ".webp": "image/webp", ".woff2": "font/woff2"}
+         ".webp": "image/webp", ".woff2": "font/woff2", ".svg": "image/svg+xml"}
 
 # One audit record is a few hundred bytes, so this is a few hundred decisions -
 # far more than a visitor makes. Reading the tail rather than the file is what
@@ -1152,6 +1160,105 @@ async def page(request):
                     # this every click re-downloads the CSS and the JS instead
                     # of getting a 304.
                     headers={"ETag": etag, "Cache-Control": "public, max-age=60"})
+
+
+# --------------------------------------------------------------- error pages
+
+# What each status says to a visitor. The gate line is the point of the second
+# column: this host moves money, and someone who lands on a broken page needs to
+# know within one sentence whether their balance is affected.
+ERRORS = {
+    404: ("Not found",
+          "That address is not part of this site.",
+          "Nothing was charged, and no limit changed."),
+    405: ("Wrong method",
+          "That address exists, but not for the way it was asked for.",
+          "Nothing was charged, and no limit changed."),
+    500: ("Something broke here",
+          "This page failed to render. The failure is ours, not yours.",
+          "The gate refuses by default, so no spend passed while this was broken."),
+    503: ("Temporarily unavailable",
+          "The site is up but a part it depends on is not answering.",
+          "The gate refuses by default, so no spend passed while this was broken."),
+}
+
+# Inlined rather than served from app.css, and that is the whole point: this is
+# the page shown when something is already broken, so it must not depend on a
+# second request succeeding. No webfont, no stylesheet, no script. The two
+# colours are copies of --color-paper and --color-blue; if the palette moves,
+# move them here too - a duplicated token beats a page that cannot paint.
+_ERROR_TEMPLATE = """<!doctype html>
+<html lang="en" data-skin="night">
+<head>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="alternate icon" href="/favicon.png" type="image/png">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{code} — reserve-gate</title>
+<style>
+  :root {{ color-scheme: dark; }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    padding: 2rem; background: #111112; color: #f4f4ed;
+    font: 400 1rem/1.55 ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  }}
+  main {{ max-width: 34rem; }}
+  .code {{
+    font: 700 0.8rem/1 ui-monospace, "Cascadia Mono", monospace;
+    letter-spacing: .18em; color: #d2ff00; margin: 0 0 1.25rem;
+  }}
+  h1 {{ font-size: clamp(1.9rem, 5vw, 2.75rem); line-height: 1.1; margin: 0 0 1rem; font-weight: 500; }}
+  p {{ margin: 0 0 .75rem; color: #a9a9a2; }}
+  .gate {{ color: #f4f4ed; }}
+  a {{
+    display: inline-block; margin-top: 1.75rem; padding: .7rem 1.4rem;
+    background: #d2ff00; color: #111112; text-decoration: none;
+    font: 700 .8rem/1 ui-monospace, "Cascadia Mono", monospace; letter-spacing: .12em;
+  }}
+  a:focus-visible {{ outline: 2px solid #f4f4ed; outline-offset: 3px; }}
+</style>
+</head>
+<body>
+<main>
+  <p class="code">ERROR {code}</p>
+  <h1>{title}</h1>
+  <p>{detail}</p>
+  <p class="gate">{gate}</p>
+  <a href="/">Back to the demo</a>
+</main>
+</body>
+</html>
+"""
+
+
+@functools.lru_cache(maxsize=len(ERRORS))
+def error_html(status: int) -> bytes:
+    """The page body for one status. Cached: these never change at runtime."""
+    title, detail, gate = ERRORS.get(status, ERRORS[500])
+    return _ERROR_TEMPLATE.format(code=status, title=title,
+                                  detail=detail, gate=gate).encode()
+
+
+def wants_html(scope) -> bool:
+    """Is this a browser navigating, rather than an agent calling the API?
+
+    Read off Accept alone. A person gets a page and a client gets JSON, and the
+    status code is the same either way - the representation changes, never the
+    answer.
+    """
+    accept = dict(scope.get("headers") or {}).get(b"accept", b"")
+    return b"text/html" in accept
+
+
+def error_response(status: int, scope):
+    """One status, rendered for whoever asked."""
+    if wants_html(scope):
+        return Response(error_html(status), status_code=status,
+                        media_type="text/html; charset=utf-8",
+                        headers={"Cache-Control": "no-store"})
+    title = ERRORS.get(status, ERRORS[500])[0]
+    return JSONResponse({"error": title.lower().replace(" ", "_")}, status)
 
 
 ROUTES = [

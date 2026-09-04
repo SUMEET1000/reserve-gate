@@ -14,6 +14,7 @@ import functools
 import os
 import re
 import secrets
+import traceback
 from dataclasses import replace
 from typing import Any
 
@@ -394,6 +395,70 @@ def gzip_dashboard(app):
     return wrapper
 
 
+def error_pages(app):
+    """Give every error status a page, and never let an internal detail out.
+
+    Two jobs, and the second is the one that matters on a money host. An
+    unhandled exception is recorded to the audit log with its type and the path,
+    where an operator can find it, and the visitor is sent a fixed page that
+    names no module, no line and no exception text. Starlette's own default is a
+    bare `Internal Server Error` string; under debug it is a full traceback, and
+    a traceback on a public host hands a reader the file layout for free.
+
+    Statuses raised by the router - a 404 for a path this host does not serve, a
+    405 for the wrong method - are swapped for the same page set on the way out,
+    so there is one look for every failure rather than one per framework
+    default. The swap only happens for a client that asked for HTML and only for
+    a response that is not already HTML, so the JSON API keeps answering JSON.
+    """
+    async def wrapper(scope, receive, send):
+        if scope["type"] != "http":
+            return await app(scope, receive, send)
+
+        state = {"started": False, "swap": False}
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                status = message["status"]
+                ctype = dict(message.get("headers") or {}).get(b"content-type", b"")
+                # text/plain is the tell. Every framework default error body
+                # is plain text, and nothing this host writes on purpose is -
+                # the handlers answer application/json and the pages text/html.
+                # Keying the swap on it means a handler's own 404, which
+                # carries a reason the API contract promises, is never
+                # overwritten by a generic one.
+                if status in dashboard.ERRORS and ctype.startswith(b"text/plain"):
+                    state["swap"] = True
+                    return await dashboard.error_response(status, scope)(
+                        scope, receive, send)
+                state["started"] = True
+            elif state["swap"]:
+                # The original body for a status we have already answered.
+                return
+            await send(message)
+
+        try:
+            await app(scope, receive, send_wrapper)
+        except Exception as exc:
+            # Type and path only. The message can carry a row, an id or a token
+            # a caller sent, and this line is read back out of the audit log.
+            audit.record(event="server_error", path=scope.get("path", ""),
+                         error=type(exc).__name__)
+            # The traceback goes to the process log, where an operator is, and
+            # nowhere near the response. Never re-raise into a running server:
+            # the exception is handled here, and the operator has the whole of
+            # it on stderr.
+            traceback.print_exc()
+            if state["started"]:
+                # Headers are already on the wire; there is no valid way to turn
+                # this into a 500 now. Dropping the connection is what tells the
+                # client the body is incomplete.
+                raise
+            return await dashboard.error_response(500, scope)(scope, receive, send)
+
+    return wrapper
+
+
 def bearer_auth(app):
     """Reject every HTTP request that does not present the right credential.
 
@@ -411,6 +476,15 @@ def bearer_auth(app):
         # token. Never pass --root-path, or match on the stripped value instead.
         # A lifespan scope carries no path, so the type check has to come first.
         path = scope.get("path", "")
+        # A path that is no route at all is a 404, not a 401. Everything this
+        # host serves is OPEN_PATHS, the admin prefixes, or /mcp; anything else
+        # was never here. Answering 401 to it told a visitor who mistyped a URL
+        # that they had a credentials problem, and told a scanner nothing it did
+        # not already know - the public route list is the site itself, and every
+        # guarded route below still demands its token.
+        if (scope["type"] == "http" and path not in OPEN_PATHS
+                and not path.startswith(ADMIN_PATHS) and not path.startswith("/mcp")):
+            return await dashboard.error_response(404, scope)(scope, receive, send)
         if scope["type"] == "http" and (path.startswith(ADMIN_PATHS)
                                         or path not in OPEN_PATHS):
             name = ("RESERVE_GATE_ADMIN_TOKEN" if path.startswith(ADMIN_PATHS)
@@ -455,7 +529,8 @@ def main() -> None:
     import uvicorn
     # 0.0.0.0 is required: Render routes to the container's external interface,
     # and the bearer check above runs in front of every request.
-    uvicorn.run(bearer_auth(gzip_dashboard(mcp.streamable_http_app())),
+    # Outermost, so it also covers a failure inside bearer_auth itself.
+    uvicorn.run(error_pages(bearer_auth(gzip_dashboard(mcp.streamable_http_app()))),
                 host="0.0.0.0", port=a.port)  # nosec B104
 
 

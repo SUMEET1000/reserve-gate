@@ -4,24 +4,47 @@
 
 // Every request goes through here so no panel can fail silently. A rejected
 // promise is the caller's cue to render its error state, not to give up.
-export async function api(path, body) {
-  const r = await fetch(path, body === undefined ? { credentials: 'same-origin' } : {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  let data = {};
-  try { data = await r.json(); } catch { data = {}; }
-  if (!r.ok && data.error) throw new Error(data.error);
-  if (!r.ok) throw new Error('the server answered ' + r.status);
-  return data;
+export async function api(path, body, { timeoutMs = 10000 } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const r = await fetch(path, body === undefined ? { credentials: 'same-origin', signal: controller.signal } : {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    let data = {};
+    try { data = await r.json(); } catch { data = {}; }
+    if (!r.ok && data.error) throw new Error(data.error);
+    if (!r.ok) throw new Error('the server answered ' + r.status);
+    return data;
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error('request timed out after ' + Math.round(timeoutMs / 1000) + 's');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function money(paise, currency = 'INR') {
-  if (typeof paise !== 'number') return String(paise ?? '—');
+  if (typeof paise !== 'number' || !Number.isFinite(paise)) return String(paise ?? '—');
   const sign = currency === 'INR' ? '₹' : currency + ' ';
   return sign + (paise / 100).toLocaleString('en-IN', { minimumFractionDigits: 2 });
+}
+
+// The two halves of a typed rupee amount. State keeps bare digits, so nothing a person
+// types can carry a separator into a request; the display groups them the Indian way -
+// last three digits, then pairs - on the same 'en-IN' locale money() above uses, so a
+// figure a visitor types groups exactly like the figure the gate reports back.
+export const onlyDigits = s => String(s ?? '').replace(/\D/g, '');
+
+export function groupRupees(digits) {
+  const d = onlyDigits(digits);
+  return d === '' ? '' : Number(d).toLocaleString('en-IN');
 }
 
 const MONEY_DETAIL_KEYS = new Set([
@@ -137,7 +160,7 @@ export function md(text) {
       if (!table) {
         closeList();
         table = true;
-        out.push('<div class="max-w-full overflow-x-auto"><table class="w-full min-w-[900px] border-collapse"><thead><tr>'
+        out.push('<div class="table-scroll max-w-full"><table class="w-full min-w-[900px] border-collapse"><thead><tr>'
           + row.map(c => `<th class="border-b border-rule p-2 text-left font-mono text-xs tracking-wider whitespace-nowrap text-blue uppercase">${inline(c)}</th>`).join('')
           + '</tr></thead><tbody>');
         continue;

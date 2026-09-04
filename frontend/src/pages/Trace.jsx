@@ -15,17 +15,17 @@ import {
 // so an event added to the log shows up untranslated rather than silently as
 // something it is not.
 const EXPLAIN = {
-  allow: ['The gate said yes', 'It checked the price against your budget and let it through.'],
-  block: ['The gate said no', 'Something broke one of your rules, so nothing was sent.'],
-  hold: ['The gate asked a person', 'Too big to pass on its own, so it waited for approval.'],
-  reservation_bound: ['Razorpay gave us an order number',
-    'The money set aside a moment ago is now tied to that exact order.'],
-  debit_committed: ['The money actually moved',
-    'Set-aside became spent. This is the only line on which your balance really changes.'],
-  reservation_released: ['The money went back', 'Nothing was charged, so your budget got it back.'],
-  reservation_expired: ['Nobody paid in time', 'The set-aside amount returned to your budget.'],
-  COLD_START_LEDGER_RESET: ['A fresh budget was created',
-    'There was no budget for this visitor yet, so one was built from the settings.'],
+  allow: ['Policy verdict — ALLOW', 'Pre-authorization validated against remaining budget and policy constraints.'],
+  block: ['Policy verdict — BLOCK', 'Request violated spending policy. Upstream payment creation halted.'],
+  hold: ['Policy verdict — HOLD', 'Amount exceeds automated threshold, routed for manual operator review.'],
+  reservation_bound: ['Order ID bound',
+    'The reservation is now cryptographically bound to the upstream Razorpay order.'],
+  debit_committed: ['Debit committed',
+    'Reservation settled and committed to the ledger upon verified payment capture.'],
+  reservation_released: ['Reservation released', 'Transaction cancelled or declined. Reserved funds returned to budget.'],
+  reservation_expired: ['Authorization expired', 'Payment window timed out. Uncaptured reservation refunded to budget.'],
+  COLD_START_LEDGER_RESET: ['Fresh ledger initialized',
+    'No previous ledger state found for this session, initialized from baseline settings.'],
 };
 
 const receiptName = receipt => receipt?.replace(/-[A-Za-z0-9_-]{6}$/, '');
@@ -57,7 +57,8 @@ export default function Trace() {
 
   function pick(id) {
     setOrder(id);
-    chainRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const reduce = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    chainRef.current?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'nearest' });
   }
 
   const settled = list.data?.purchases.filter(p => p.settled).length;
@@ -71,7 +72,7 @@ export default function Trace() {
         came from their test mode. It is not an endorsement.</p>
       </>}
       title="Follow one real payment, start to finish"
-      lede={'One ₹100 purchase that genuinely happened: an order created through the gate, a '
+      lede={'One ₹100 purchase that genuinely happened — an order created through the gate, a '
         + 'card paid by hand in a browser, and the charge taken back through the gate. Every '
         + 'step below was written down as it happened, and none of it can be edited afterwards '
         + 'without showing.'}
@@ -80,7 +81,7 @@ export default function Trace() {
         ['Settled', String(settled).padStart(2, '0')],
       ] : []}
       footer={'Each line carries a fingerprint of the line before it. Change one, delete one, '
-        + 'or swap two around, and every link after that point stops matching — and the check '
+        + 'or swap two around, and every link after that point stops matching, and the check '
         + 'names the first line that broke.'}
     >
       <Panel
@@ -117,7 +118,9 @@ export default function Trace() {
           title="What was written down"
           intro="Read it top to bottom. This is the whole life of one purchase."
         >
-          {chain.idle && <Note>Pick a purchase above.</Note>}
+          {chain.idle && (list.data?.purchases?.length === 0
+            ? <Note>No transactions recorded yet in this ledger.</Note>
+            : <Note>Pick a purchase above.</Note>)}
           {chain.loading && <Skeleton height="10rem" />}
           {chain.error && <ErrorLine>{chain.error}</ErrorLine>}
           {chain.data && (

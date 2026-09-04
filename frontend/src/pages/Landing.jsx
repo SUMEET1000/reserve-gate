@@ -1,5 +1,9 @@
+import { Suspense, lazy } from 'react';
 import { Brand, Button, Roll, SiteFooter, SiteHeader } from '../components/Shell.jsx';
-import HeroScene from '../components/HeroScene.jsx';
+
+// three.js is 590 KB of the bundle and only this page draws with it, so it
+// loads as its own chunk (web/app-hero.js) rather than on all six pages.
+const HeroScene = lazy(() => import('../components/HeroScene.jsx'));
 
 // The Orbit Sheet. Every section is a plate on one drawing: a numbered rule
 // across the top, the content set against it, and measurement in the margin.
@@ -83,19 +87,23 @@ export default function Landing() {
   return (
     <>
       <SiteHeader>
-        <nav aria-label="Main navigation" className="flex items-center gap-6 sm:gap-10">
+        <nav aria-label="Main navigation" className="site-nav">
           <a href="#how" className="nav-link max-sm:hidden"><Roll>How it works</Roll></a>
           <a href="#proof" className="nav-link max-sm:hidden"><Roll>Proof</Roll></a>
-          <Button href="/demo" className="max-sm:px-3">Try the guided demo</Button>
+          <Button href="/demo" variant="primary" className="max-sm:px-3">Try the guided demo</Button>
         </nav>
       </SiteHeader>
 
-      <main>
+      <main id="main-content" tabIndex="-1">
         <section aria-labelledby="hero-title" className="landing-hero relative overflow-hidden">
           {/* One canvas for the whole section. The rings are the page ground
               here, not a panel beside the text, which is the only way the gate
               can be seen to bend the same lines the sheet is drawn with. */}
-          <HeroScene className="absolute inset-0 h-full w-full" />
+          {/* No fallback: the canvas is the section's background, and the
+              text over it is readable before the rings arrive. */}
+          <Suspense fallback={null}>
+            <HeroScene className="absolute inset-0 h-full w-full" />
+          </Suspense>
 
           <svg
             aria-hidden="true"
@@ -130,17 +138,7 @@ export default function Landing() {
           <span className="sheet-note" data-at="bl">Razorpay test mode</span>
           <span className="sheet-note" data-at="br">Hash-chained audit</span>
 
-          {/* The ghost layer, and it is the page's own words rather than filler:
-              a specification printed under its drawing says the same thing
-              twice, which is the point. Inert to pointer, selection and
-              assistive tech, because it is texture and not text. */}
-          <p aria-hidden="true" className="ghost-text max-lg:hidden">
-            RG Routing Manifest → every money call is checked against the block before
-            it is forwarded. R0 currency and unit · R1 block cap · R2 expiry ·
-            R3 multiple debits · R4 revocation · R5 per-transaction cap ·
-            R6 velocity window · R7 idempotency. Decision, rule, amount attempted and
-            remaining balance are written to one append-only hash-chained record.
-          </p>
+
 
           <div className="hero-grid">
             <div className="hero-copy">
@@ -239,10 +237,10 @@ export default function Landing() {
 
           <p className="plate-foot">
             Measured 1 September 2026 by <code>harness/gate_off.py</code>,
-            which exits non-zero if the second row is ever dirty — so it cannot report a win by
+            which exits non-zero if the second row is ever dirty, so it cannot report a win by
             being broken. Of the 150 cases, 130 try to move money and 80 of those should be
             refused. The 43 that never got through even with every guard deleted were caught by
-            code those deletions do not cover; the run names them rather than claiming credit.
+            code those deletions do not cover, and the run names them rather than claiming credit.
           </p>
         </section>
 

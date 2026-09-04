@@ -26,6 +26,7 @@ Handoff/
 *BUILDPLAN*.md
 NOTES.md
 PROGRESS.md
+PRODUCT.md
 IDEAS.md
 TODO.md
 submission-answers.md
@@ -68,13 +69,15 @@ graphify-out/
 .playwright/
 .playwright-cli/
 
-# Impeccable scratch: decision comps, generation logs, and the throwaway
-# generation script. PRODUCT.md and DESIGN.md are tracked; these are not.
-.impeccable/mocks/
-.impeccable/*.log
-.impeccable/gen-comps.sh
-.impeccable/decision-payload.json
-.impeccable/comp-round-payload.json
+# One-off page-audit scripts and their output, written into frontend/ by
+# browsing sessions. run_audit.mjs imports playwright through an absolute path
+# into this machine's global npm folder, so it is not runnable anywhere else,
+# and audit_results.json is that run's output rather than a source file.
+frontend/run_audit.mjs
+frontend/audit_deep.mjs
+frontend/audit_results.json
+
+.impeccable/
 
 # The design journal, private like PROGRESS.md and IDEAS.md.
 DESIGN_PROGRESS.md
@@ -92,7 +95,3 @@ DESIGN_PROGRESS.md
 references/
 assets/
 
-# Impeccable run scratch: critique write-ups and the question-server logs.
-# .impeccable/config.json is tracked; these are per-run output.
-.impeccable/critique/
-.impeccable/questions/

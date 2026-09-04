@@ -65,7 +65,7 @@ function Result({ result }) {
       </p>
       {!result.baseline && result.caught_by && result.caught_by !== '-' && (
         <p className="reading__foot">
-          When money still did not escape, this stopped it instead: <b>{result.caught_by}</b>.
+          When money still did not escape, this stopped it instead — <b>{result.caught_by}</b>.
         </p>
       )}
       <Disclosure className="mt-5" summary="The exact counts">
@@ -105,9 +105,9 @@ export default function Mutate() {
     <ProofPage
       current="/mutate"
       title="Remove a rule and see if anyone notices"
-      lede={'I wrote the rules and I wrote the tests that check them. Asking me whether my own '
-        + 'tests are any good proves nothing. Deleting a rule does: if the tests still pass '
-        + 'without it, they were never really testing it.'}
+      lede={'Mutation testing validates test suite sensitivity. If tests still pass '
+        + 'after deleting a gate rule, they were never really testing it. Disabling a '
+        + 'rule proves whether each defense is actively verified.'}
       stats={[['Rules removable', '16'], ['Cases replayed', '150']]}
       footer={'You are choosing from a fixed list, by number. Nothing you type is ever run as '
         + 'code, and the scoring happens in a separate process, so removing a rule here cannot '
@@ -117,7 +117,7 @@ export default function Mutate() {
         title="First, the control"
         intro="Run it with nothing removed. All 150 test purchases must come out right. If they
                do not, every red result below could be blamed on a broken test set rather than
-               on a missing rule — so this run is what makes the rest of the page mean anything."
+               on a missing rule, so this run is what makes the rest of the page mean anything."
       >
         <Button variant="primary" onClick={() => run(null, 'baseline')} disabled={!!running}>
           {running === 'baseline' ? 'Checking 150 purchases…' : 'Run it with nothing removed'}

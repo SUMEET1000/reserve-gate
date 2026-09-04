@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "dev": "vite build --watch"
+    "dev": "vite build --watch",
+    "test": "node test-money.mjs"
   },
   "dependencies": {
     "lenis": "^1.3.26",

@@ -42,11 +42,11 @@ const ATTACKS = [
 ];
 
 const WEBHOOKS = [
-  ['apply', 'A real one', 'Settles an order your budget is holding.'],
-  ['again', 'The same one again', 'Razorpay says duplicates are expected.'],
-  ['out_of_order', 'One that arrives late', 'Ordering is not guaranteed either.'],
-  ['bad_signature', 'One that is not really from Razorpay', 'Wrong signature.'],
-  ['changed_amount', 'One with the amount edited', 'Says a different number.'],
+  ['apply', 'Valid webhook', 'Settles an order your budget is holding.'],
+  ['again', 'Duplicate event', 'Razorpay documentation notes duplicates are expected.'],
+  ['out_of_order', 'Out-of-order delivery', 'Delivery order is not guaranteed by webhooks.'],
+  ['bad_signature', 'Forged signature', 'Invalid HMAC signature rejected by gate.'],
+  ['changed_amount', 'Tampered amount', 'Payload amount modified after authorization.'],
 ];
 
 // The box carries whatever was typed, as its own JSON type: "1000.7" is a
@@ -63,13 +63,15 @@ function rupeesToPaise(raw) {
   return typeof amount === 'number' && Number.isFinite(amount) ? amount * 100 : amount;
 }
 
-function Field({ label, hint, value, onChange, className = '', ...rest }) {
+function Field({ id, label, hint, value, onChange, className = '', ...rest }) {
+  const inputId = id || `field-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+  const hintId = hint ? `${inputId}-hint` : undefined;
   return (
-    <label className={`field ${className}`}>
-      <span className="field__label">{label}</span>
-      {hint && <span className="field__hint">{hint}</span>}
-      <input value={value} onChange={e => onChange(e.target.value)} {...rest} />
-    </label>
+    <div className={`field ${className}`}>
+      <label htmlFor={inputId} className="field__label">{label}</label>
+      {hint && <span id={hintId} className="field__hint">{hint}</span>}
+      <input id={inputId} aria-describedby={hintId} value={value} onChange={e => onChange(e.target.value)} {...rest} />
+    </div>
   );
 }
 
@@ -161,7 +163,11 @@ export default function Attack() {
     }
   }
 
+  const [acting, setActing] = useState(false);
+
   async function act(path, note) {
+    if (acting) return;
+    setActing(true);
     setBlockState({ text: 'Working…' });
     try {
       const r = await api(path, {});
@@ -169,6 +175,8 @@ export default function Attack() {
       setBlockState({ text: note });
     } catch (e) {
       setBlockState({ text: e.message, error: true });
+    } finally {
+      setActing(false);
     }
   }
 
@@ -191,21 +199,21 @@ export default function Attack() {
     >
       <Panel
         title="Your budget"
-        intro="Everything on this page spends against this, and only this. It is yours: nobody
+        intro="Everything on this page spends against this, and only this. It is yours — nobody
                else visiting the site can see it or touch it."
       >
         {blockError ? <ErrorLine>{blockError}</ErrorLine>
           : block ? <Meter block={block} /> : <Skeleton height="3.5rem" />}
         <div className="act-row">
-          <Button onClick={() => act('/api/revoke',
+          <Button disabled={acting} onClick={() => act('/api/revoke',
             'Cancelled. Try any purchase now — it is refused straight away.')}>
             Cancel this budget
           </Button>
-          <Button onClick={() => act('/api/expire',
+          <Button disabled={acting} onClick={() => act('/api/expire',
             'Expired. The very instant it runs out, purchases stop.')}>
             Jump to its end date
           </Button>
-          <Button onClick={() => act('/api/session/reset', 'Fresh budget, back at the defaults.')}>
+          <Button disabled={acting} onClick={() => act('/api/session/reset', 'Fresh budget, back at the defaults.')}>
             Start over
           </Button>
           {blockState.text && (
@@ -276,20 +284,25 @@ export default function Attack() {
         <Disclosure className="mt-8" summary="Or write the request yourself"
                     hint="for the technically minded">
           <Note className="mb-5">
-            Enter the amount in rupees. This page converts it to Razorpay's integer paise unit
-            only when the request is sent.
+            The buttons above send ready-made requests. Here you write one yourself, field by
+            field, and the gate judges it exactly the same way. Change anything you like — the
+            boxes below say what each one does and what happens if you push it.
           </Note>
+          {/* Every field carries a hint, and that is a layout decision as much as a copy one:
+              a row of .field boxes where some have a hint and some do not is a row of different
+              heights, which is what made this box read as ragged. Same three rows in each. */}
           <div className="field-row">
-            <Field label="Payment action" value={call.tool} onChange={set('tool')} />
-            <Field label="Amount" hint="in rupees" value={call.amount}
-                   onChange={set('amount')} className="is-narrow" />
-            <Field label="Currency" value={call.currency} onChange={set('currency')}
-                   className="is-narrow" />
-            <Field label="Repeat key" hint="optional" value={call.key} onChange={set('key')}
-                   placeholder="(leave blank)" />
+            <Field label="Action" hint="What the AI is asking to do. Only create_order is allowed. Type anything else and the gate refuses it."
+                   value={call.tool} onChange={set('tool')} />
+            <Field label="Amount" hint="In rupees. Go over a limit you set and it is blocked."
+                   value={call.amount} onChange={set('amount')} />
+            <Field label="Currency" hint="INR. Any other code is refused, so a big number cannot sneak in as dollars."
+                   value={call.currency} onChange={set('currency')} />
+            <Field label="Idempotency key" hint="Optional. Send twice with the same key and the second one replays instead of charging again."
+                    value={call.key} onChange={set('key')} placeholder="leave blank" />
           </div>
           <Field label="Product name"
-                 hint="Free text. The point of the next section is that it goes nowhere."
+                 hint="Free text, like a real shopping basket. Write an instruction in here if you want — the gate never reads it, which is what the next section proves."
                  value={call.receipt} onChange={set('receipt')} className="is-wide mt-5" />
           <Button variant="primary" className="mt-5" onClick={() => send('your own request')}
                   disabled={sending !== null}>
@@ -301,13 +314,13 @@ export default function Attack() {
       <Panel
         title="Try to talk it into saying yes"
         intro="Hide an instruction inside the product name. The same purchase is then judged
-               twice — once carrying your text, once with it removed. If both answers match,
+               twice: once carrying your text, once with it removed. If both answers match,
                the gate never read a word of it."
       >
-        <label className="field is-wide">
-          <span className="field__label">Your hidden instruction</span>
-          <textarea rows={2} value={payload} onChange={e => setPayload(e.target.value)} />
-        </label>
+        <div className="field is-wide">
+          <label htmlFor="hidden-instruction" className="field__label">Your hidden instruction</label>
+          <textarea id="hidden-instruction" rows={2} value={payload} onChange={e => setPayload(e.target.value)} />
+        </div>
         <Button variant="primary" className="mt-4" onClick={runTwin} disabled={twinBusy}>
           {twinBusy ? 'Judging both…' : 'Judge it both ways'}
         </Button>
@@ -332,10 +345,10 @@ export default function Attack() {
                 ))}
             </div>
             <Note className="mt-5">
-              These are the only things a decision can see:{' '}
+              These are the only things a decision can see —{' '}
               {twin.call_fields.map(f => <code key={f}>{f}</code>)}.
               There is nowhere for a product name to sit, so no wording anyone invents can
-              ever get through — which is a stronger claim than passing a list of examples.
+              ever get through, which is a stronger claim than passing a list of examples.
             </Note>
           </div>
         )}
@@ -377,7 +390,7 @@ export default function Attack() {
         title="What just happened"
         intro="Every decision on this page, in order, as it was written to the audit log."
       >
-        {feed.error && <ErrorLine>The live view stopped updating: {feed.error}</ErrorLine>}
+        {feed.error && <ErrorLine>The live view stopped updating — {feed.error}</ErrorLine>}
         <div className="feed-well">
           {feed.rows.length === 0 && (
             <Note>Nothing yet. Send a purchase above and it appears here within a second or two.</Note>

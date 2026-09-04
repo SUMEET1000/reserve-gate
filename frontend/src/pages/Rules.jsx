@@ -57,7 +57,7 @@ export default function Rules() {
         ['Per purchase', money(cfg.max_txn, cfg.currency)],
         ['Checks', '09'],
       ] : [['Checks', '09']]}
-      footer={'reserve-gate copies how Reserve Pay behaves; it does not use Reserve Pay, which '
+      footer={'reserve-gate copies how Reserve Pay behaves, and does not use Reserve Pay, which '
         + 'Razorpay does not offer in test mode. Saying otherwise would be untrue and easy to '
         + 'catch.'}
     >

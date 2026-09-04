@@ -1,5 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import Lenis from 'lenis';
 import './styles.css';
 
 import Landing from './pages/Landing.jsx';
@@ -9,6 +10,7 @@ import Mutate from './pages/Mutate.jsx';
 import Trace from './pages/Trace.jsx';
 import Rules from './pages/Rules.jsx';
 import Evidence from './pages/Evidence.jsx';
+import { ErrorBoundary } from './components/ErrorBoundary.jsx';
 
 // One bundle for seven pages. The server keeps serving seven separate HTML
 // files at seven exact paths, because PUBLIC_PATHS is a closed set and a
@@ -58,21 +60,16 @@ document.documentElement.classList.add('js-reveal');
 // test stays: removing data-skin from the shells restores The Orbit Sheet, and
 // its scrolling has to come back with it.
 //
-// The import is dynamic but is still inside app.js: vite.config.js sets
-// inlineDynamicImports because
-// PUBLIC_PATHS is a closed route set (G1) and a second chunk would need a second
-// route. Measured 2 Sept 2026 - app.js 799.58 to 820.07 kB, about 6 kB gzipped,
-// paid by both skins.
+// The import is static so lenis stays inside app.js. It used to be dynamic and
+// was inlined by vite.config.js; once that config started splitting chunks for
+// the hero, a dynamic import here became its own file, and every page pays a
+// round trip for 5.45 kB gzipped it needs anyway. Measured 2 Sept 2026 - lenis
+// costs app.js 799.58 to 820.07 kB, about 6 kB gzipped, paid by both skins.
 if (document.documentElement.dataset.skin === 'night'
     && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-  import('lenis').then(({ default: Lenis }) => {
-    const lenis = new Lenis({ duration: 1.05, smoothWheel: true });
-    const raf = (t) => { lenis.raf(t); requestAnimationFrame(raf); };
-    requestAnimationFrame(raf);
-  }).catch(() => {
-    // A failed chunk must cost the skin its scroll feel and nothing else; the
-    // page scrolls natively and every other behaviour is unchanged.
-  });
+  const lenis = new Lenis({ duration: 1.05, smoothWheel: true });
+  const raf = (t) => { lenis.raf(t); requestAnimationFrame(raf); };
+  requestAnimationFrame(raf);
 }
 
 const reveal = new IntersectionObserver(entries => {
@@ -95,12 +92,18 @@ setTimeout(() => {
 }, 2000);
 
 if (mount && Page) {
-  createRoot(mount).render(<StrictMode><Page /></StrictMode>);
-  // After the first paint, and again whenever a route swaps content in.
+  createRoot(mount).render(<StrictMode><ErrorBoundary><Page /></ErrorBoundary></StrictMode>);
+  // After the first paint, and again whenever a route swaps content in. RAF
+  // debounce: only one querySelectorAll per animation frame regardless of how
+  // many DOM mutations arrive in the same batch (keystrokes, polling ticks).
   requestAnimationFrame(watchReveals);
-  new MutationObserver(watchReveals).observe(mount, { childList: true, subtree: true });
+  let revealTimer = null;
+  new MutationObserver(() => {
+    if (revealTimer) return;
+    revealTimer = requestAnimationFrame(() => { watchReveals(); revealTimer = null; });
+  }).observe(mount, { childList: true, subtree: true });
 } else if (mount) {
   // A shell naming a page this bundle does not have is a build mistake, not a
   // visitor's problem, so it says so instead of leaving an empty page.
-  mount.textContent = 'This page is not in the build: ' + document.body.dataset.page;
+  mount.textContent = 'This page is not in the build — ' + document.body.dataset.page;
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, money, plainReason } from '../lib/api.js';
+import { api, groupRupees, money, onlyDigits, plainReason } from '../lib/api.js';
 import { Button, RazorpayBrand, Roll, SiteFooter, SiteHeader } from '../components/Shell.jsx';
 import { Disclosure, ErrorLine, Marginal, Note, Panel, VerdictMark } from '../components/ui.jsx';
 
@@ -88,16 +88,23 @@ function useStation() {
 // rupees while every amount the API carries is paise, and a field that does not
 // say which is the one place this site could mislead by omission.
 function MoneyField({ id, label, hint, value, onChange }) {
+  const hintId = hint ? `${id}-hint` : undefined;
   return (
-    <label className="field" htmlFor={id}>
-      <span className="field__label">{label}</span>
-      <span className="field__hint">{hint}</span>
+    <div className="field">
+      <label className="field__label" htmlFor={id}>{label}</label>
+      {hint && <span id={hintId} className="field__hint">{hint}</span>}
       <span className="field__money">
         <span aria-hidden="true">₹</span>
-        <input id={id} type="number" min="1" step="1" required
-               value={value} onChange={e => onChange(e.target.value)} />
+        {/* type="text", not "number": a number input refuses to render a thousands
+            separator, so grouping and type="number" cannot both exist. What is stored is
+            still bare digits, so applyLimits is unchanged and no comma reaches the API.
+            The pattern replaces the min="1" this used to carry. */}
+        <input id={id} type="text" inputMode="numeric" pattern="[1-9][0-9,]*" required
+               aria-describedby={hintId}
+               value={groupRupees(value)}
+               onChange={e => onChange(onlyDigits(e.target.value))} />
       </span>
-    </label>
+    </div>
   );
 }
 
@@ -106,6 +113,7 @@ export default function Demo() {
 
   const [limits, setLimits] = useState({ reserved: '10000', max_txn: '5000', approval_over: '2000' });
   const [limitState, setLimitState] = useState({ text: '' });
+  const [applying, setApplying] = useState(false);
   const [shopState, setShopState] = useState({ text: '' });
   const [shopping, setShopping] = useState(false);
   const [results, setResults] = useState(null);
@@ -119,8 +127,26 @@ export default function Demo() {
     block: 'start',
   });
 
+  function validateLimits(l) {
+    const res = Number(l.reserved || 0);
+    const max = Number(l.max_txn || 0);
+    const app = Number(l.approval_over || 0);
+    if (res <= 0) return 'Total budget must be greater than ₹0';
+    if (max <= 0) return 'Maximum transaction must be greater than ₹0';
+    if (max > res) return 'Maximum transaction cannot exceed total budget';
+    if (app >= max) return 'Human approval threshold must be lower than maximum transaction';
+    return null;
+  }
+
   async function applyLimits(e) {
     e.preventDefault();
+    if (applying) return;
+    const validationErr = validateLimits(limits);
+    if (validationErr) {
+      setLimitState({ text: validationErr, error: true });
+      return;
+    }
+    setApplying(true);
     setLimitState({ text: 'Applying your limits…' });
     try {
       await api('/api/session/reset', {
@@ -132,6 +158,8 @@ export default function Demo() {
       go(2);
     } catch (err) {
       setLimitState({ text: err.message, error: true });
+    } finally {
+      setApplying(false);
     }
   }
 
@@ -151,14 +179,14 @@ export default function Demo() {
   }
 
   async function approve(callId) {
-    setResults(rs => rs.map(r => r.call_id === callId ? { ...r, approving: true } : r));
+    setResults(rs => rs.map(r => r.call_id === callId ? { ...r, approving: true, approveError: null } : r));
     try {
       await api('/api/approve', { call_id: callId });
       setResults(rs => rs.map(r => r.call_id === callId
-        ? { ...r, approved: 'Approved', approving: false } : r));
+        ? { ...r, approved: 'Approved', approving: false, approveError: null } : r));
     } catch (err) {
       setResults(rs => rs.map(r => r.call_id === callId
-        ? { ...r, approved: err.message, approving: false } : r));
+        ? { ...r, approving: false, approveError: err.message } : r));
     }
   }
 
@@ -194,7 +222,7 @@ export default function Demo() {
         },
       }).open();
     } catch (err) {
-      setLiveState({ text: err.message + ' — use the recorded proof link below.', error: true });
+      setLiveState({ text: err.message + '. Use the recorded proof link below.', error: true });
     } finally {
       setLiveBusy(false);
     }
@@ -227,20 +255,20 @@ export default function Demo() {
         </nav>
       </SiteHeader>
 
-      <header className="title-block demo-title-block">
+      <section aria-labelledby="demo-title" className="title-block demo-title-block">
         {/* The same registration ticks the five detail sheets carry, so a
             visitor arriving from any of them is on the same paper. */}
         <span className="title-block__tick" data-at="tl" aria-hidden="true" />
         <span className="title-block__tick" data-at="tr" aria-hidden="true" />
 
         <Marginal>Guided demo · about 2 minutes</Marginal>
-        <h1>Follow one AI purchase<br />through the gate.</h1>
+        <h1 id="demo-title">Follow one AI purchase<br />through the gate.</h1>
         <p className="title-block__lede">
           Scroll the route. Each checkpoint tells you what will happen before you act.
         </p>
 
         <Button href="#step-1" variant="primary" className="mt-8">Start with your limits ↓</Button>
-      </header>
+      </section>
 
       {/* The station index. It is the sheet index of a drawing set turned on its
           side: the four stations in order, the one being read inked. It replaces
@@ -258,7 +286,7 @@ export default function Demo() {
         </ol>
       </nav>
 
-      <main className="sheet demo-sheet">
+      <main id="main-content" tabIndex="-1" className="sheet demo-sheet">
         <Panel
           id="step-1" data-step="1"
           mark="01 / Set limits"
@@ -277,16 +305,47 @@ export default function Demo() {
                           value={limits.approval_over}
                           onChange={v => setLimits(l => ({ ...l, approval_over: v }))} />
             </div>
-            <Button variant="primary" type="submit" className="mt-6">Apply my limits →</Button>
+            <Button variant="primary" type="submit" className="mt-6" disabled={applying}>
+              {applying ? 'Applying limits…' : 'Apply my limits →'}
+            </Button>
             <State value={limitState} />
           </form>
+
+          <div className="limits-matrix">
+            <div className="limits-card is-allow">
+              <div className="limits-card__head">
+                <span className="tag is-allow">ALLOW</span>
+                <span className="limits-card__range">≤ ₹{groupRupees(limits.approval_over || 0)}</span>
+              </div>
+              <p className="limits-card__rule">Autonomous pass</p>
+              <p className="limits-card__desc">Purchases under your threshold execute instantly with zero friction.</p>
+            </div>
+
+            <div className="limits-card is-hold">
+              <div className="limits-card__head">
+                <span className="tag is-hold">HOLD</span>
+                <span className="limits-card__range">₹{groupRupees(limits.approval_over || 0)} – ₹{groupRupees(limits.max_txn || 0)}</span>
+              </div>
+              <p className="limits-card__rule">Human approval</p>
+              <p className="limits-card__desc">Mid-tier purchases pause and wait for your 1-click review at checkpoint 03.</p>
+            </div>
+
+            <div className="limits-card is-block">
+              <div className="limits-card__head">
+                <span className="tag is-block">BLOCK</span>
+                <span className="limits-card__range">&gt; ₹{groupRupees(limits.max_txn || 0)}</span>
+              </div>
+              <p className="limits-card__rule">Hard boundary</p>
+              <p className="limits-card__desc">Instantly refused. Exceeds transaction ceiling, never touches payment network.</p>
+            </div>
+          </div>
         </Panel>
 
         <Panel
           id="step-2" data-step="2"
           mark="02 / Preview"
           title="The AI plans a desk setup."
-          intro="Expected: small purchases pass, purchases above your approval line wait, and
+          intro="Expected — small purchases pass, purchases above your approval line wait, and
                  anything above the purchase limit is blocked."
         >
           <ul className="basket">
@@ -307,22 +366,22 @@ export default function Demo() {
         <Panel
           id="step-3" data-step="3"
           mark="03 / Decisions"
-          title="Every result says what happened — and why."
+          title="Every result says what happened and why."
           intro={<>
             <strong>Purchased</strong> came out of your budget. <strong>Ask you</strong>{' '}
-            is set aside and waiting for your yes. <strong>Blocked</strong> never got
+            is set aside and waiting for your approval. <strong>Blocked</strong> never got
             anywhere near a payment.
           </>}
         >
           {tally && (
             <div className="reading is-allow">
-              <h3>What the block earned the shop</h3>
+              <h3>Approved purchase volume</h3>
               <p className="reading__figure">
                 {tally.count} {tally.count === 1 ? 'sale' : 'sales'} · {money(tally.paise)}
               </p>
               <Note className="mt-3">
-                {tally.count} {tally.count === 1 ? 'payment' : 'payments'} the shopper
-                never had to type a PIN for, because the money was set aside up front.
+                {tally.count} {tally.count === 1 ? 'payment' : 'payments'} processed automatically
+                under your budget limit.
                 {tally.refused > 0 && ` ${tally.refused} refused, and a refusal never
                 reaches Razorpay.`}
               </Note>
@@ -330,37 +389,57 @@ export default function Demo() {
           )}
 
           {!results && (
-            <Note>Run the shopping trip at checkpoint 02 to see the decisions here.</Note>
+            <div className="decisions-pending">
+              <div className="decisions-pending__intro">
+                <div>
+                  <p className="decisions-pending__title">Shopping trip awaiting evaluation</p>
+                  <Note>Run the shopping trip in step 02 above to evaluate these items against your limits and see live decision telemetry.</Note>
+                </div>
+              </div>
+
+              <div className="decisions-queue">
+                {PREVIEW.map(([name, price, verdict, good]) => (
+                  <div key={name} className="queue-row">
+                    <div className="queue-row__item">
+                      <span className="queue-row__status tag">QUEUED</span>
+                      <strong className="queue-row__name">{name}</strong>
+                    </div>
+                    <span className="queue-row__price">{price}</span>
+                    <span className={`queue-row__expected tag ${good ? 'is-allow' : 'is-hold'}`}>{verdict}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
 
-          {results && results.map(r => (
+          {results && results.map((r, index) => (
             <div key={r.call_id || r.name}
                  data-outcome={r.outcome} data-reveal
-                 className={`verdict-row reveal reveal-quick is-${(r.outcome || '').toLowerCase()}`}>
+                 style={{ animationDelay: `${index * 140}ms` }}
+                 className={`verdict-row reveal reveal-quick is-${(r.outcome || '').toLowerCase()} ${r.approved ? 'is-settled' : ''}`}>
               <VerdictMark outcome={r.outcome} />
               <div className="verdict-row__body">
                 <div className="verdict-row__head">
                   <span className="verdict-row__tag">{OUTCOME_LABEL[r.outcome] || r.outcome}</span>
                   {r.rule && <code>{r.rule}</code>}
-                  <span className="verdict-row__title">— {r.name}</span>
+                  <span className="verdict-row__title">{r.name}</span>
                   <span className="verdict-row__amount">{money(r.paise)}</span>
                 </div>
                 <details className="verdict-row__fold">
-                  <summary>Why?</summary>
+                  <summary aria-label={`Why was ${r.name} ${(r.outcome || '').toLowerCase()}?`}>Why?</summary>
                   <p>{plainReason(r, r.paise, 'INR')}{r.rule ? ` · Rule ${r.rule}` : ''}</p>
                 </details>
                 {r.call_id && (r.approved
-                  ? <p className="verdict-row__why">{r.approved}</p>
-                  : <Button className="mt-3" onClick={() => approve(r.call_id)} disabled={r.approving}>
-                      Approve
-                    </Button>)}
+                  ? <p className="verdict-row__approved-flash">{r.approved}</p>
+                  : <div className="mt-3 flex flex-wrap items-center gap-3">
+                      <Button onClick={() => approve(r.call_id)} disabled={r.approving}>
+                        {r.approving ? 'Approving…' : 'Approve'}
+                      </Button>
+                      {r.approveError && <span className="error-line text-xs">{r.approveError}</span>}
+                    </div>)}
               </div>
             </div>
           ))}
-
-          <Button variant="primary" className="mt-6" onClick={() => go(4)}>
-            Continue to payment proof →
-          </Button>
         </Panel>
 
         <Panel
@@ -372,16 +451,20 @@ export default function Demo() {
                  thing is written down in a log nobody can edit afterwards. If the payment window
                  will not open, a recorded run of the same purchase is linked below."
         >
-          <div className="reading">
-            <p className="test-stamp">TEST MODE · NO REAL MONEY</p>
-            <RazorpayBrand>Secured test checkout by <strong>Razorpay</strong></RazorpayBrand>
+          <div className="reading checkout-box">
+            <div className="checkout-box__header">
+              <p className="test-stamp">TEST MODE · NO REAL MONEY</p>
+              <RazorpayBrand>Secured test checkout by <strong>Razorpay</strong></RazorpayBrand>
+            </div>
             <p className="checkout-item">reserve-gate verification purchase</p>
-            <p className="checkout-price">₹100</p>
-            <Button variant="primary" className="mt-5" onClick={openCheckout} disabled={liveBusy}>
-              Pay ₹100 with a test card
-            </Button>
+            <div className="checkout-action-row">
+              <p className="checkout-price">₹100</p>
+              <Button variant="primary" onClick={openCheckout} disabled={liveBusy}>
+                Pay ₹100 with a test card
+              </Button>
+            </div>
             <State value={liveState} />
-            <p className="mt-4"><a href="/trace">Or watch a recorded one, step by step</a></p>
+            <p className="checkout-alt"><a href="/trace">Or watch a recorded one, step by step</a></p>
           </div>
         </Panel>
 

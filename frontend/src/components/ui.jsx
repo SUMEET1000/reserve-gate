@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { detailValue, md, money, plainReason } from '../lib/api.js';
 
 // The primitives every detail sheet is drawn with. Written for The Orbit Sheet
@@ -20,7 +20,16 @@ import { detailValue, md, money, plainReason } from '../lib/api.js';
 // to read twice. The split itself is hidden from assistive tech and the real
 // word is carried once, unsplit, beside it - letters announced one at a time is
 // what an unguarded split does to a screen reader.
-export function Roll({ children }) {
+const segmenter = typeof Intl !== 'undefined' && Intl.Segmenter
+  ? new Intl.Segmenter('en', { granularity: 'grapheme' })
+  : null;
+
+function splitGraphemes(text) {
+  if (!segmenter) return [...text];
+  return Array.from(segmenter.segment(text), s => s.segment);
+}
+
+export const Roll = memo(function Roll({ children }) {
   // A label is often a string beside an element - "Follow a purchase" and its
   // arrow. Only the words are split; anything that is not text is passed through
   // and stays put, because a ::before cannot carry a copy of a React element.
@@ -36,19 +45,28 @@ export function Roll({ children }) {
       <span className="roll__split" aria-hidden="true">
         {parts.map((part, pi) => (
           typeof part !== 'string' ? <span key={pi} className="roll__still">{part}</span>
-            : [...part].map((ch, ci) => (
-              <span
-                key={`${pi}-${ci}`}
-                className="roll__c"
-                data-c={ch}
-                style={{ '--i': n++ }}
-              >{ch === ' ' ? ' ' : ch}</span>
+            // Each word gets its own inline-block, so a line break can only land
+            // between words, never inside one - a bare per-letter span is itself
+            // a valid break point, which used to split a wrapped label mid-word
+            // (measured on the landing hero CTA at 320px, 3 Sept 2026).
+            : part.split(/(\s+)/).filter(Boolean).map((seg, si) => (
+              /\s/.test(seg)
+                ? splitGraphemes(seg).map((ch, ci) => (
+                    <span key={`${pi}-${si}-${ci}`} className="roll__c" data-c={ch} style={{ '--i': n++ }}>{' '}</span>
+                  ))
+                : (
+                  <span key={`${pi}-${si}`} className="roll__word">
+                    {splitGraphemes(seg).map((ch, ci) => (
+                      <span key={ci} className="roll__c" data-c={ch} style={{ '--i': n++ }}>{ch}</span>
+                    ))}
+                  </span>
+                )
             ))
         ))}
       </span>
     </span>
   );
-}
+});
 
 // A link that looks like a button is still a link: navigation belongs to the
 // anchor so middle-click, copy-link and the browser's own focus order all work.
@@ -239,7 +257,7 @@ export function Verdict({ decision: d, title, children }) {
         <div className="verdict-row__head">
           <span className="verdict-row__tag">{d.outcome}</span>
           {d.rule && <code>{d.rule}</code>}
-          {title && <span className="verdict-row__title">— {title}</span>}
+          {title && <bdi className="verdict-row__title">{title}</bdi>}
         </div>
         {plainReason(d) && <div className="verdict-row__why">{plainReason(d)}</div>}
         {detail && <div className="verdict-row__detail">{detail}</div>}
@@ -259,12 +277,12 @@ export function Verdict({ decision: d, title, children }) {
 // to the drawing instead of sitting on top of it.
 export function Meter({ block: b }) {
   if (!b || !b.reserved) return <p className="note">no block yet</p>;
-  const pct = n => (100 * n / b.reserved).toFixed(2) + '%';
+  const pct = n => (Math.min(100, Math.max(0, 100 * n / b.reserved))).toFixed(2) + '%';
   return (
     <div className="meter">
       <div
         role="img"
-        aria-label={`${money(b.spent)} spent, ${money(b.held)} being spent now, `
+        aria-label={`${money(b.spent)} spent, ${money(b.held)} reserved pending approval, `
         + `${money(b.available)} left of a ${money(b.reserved)} budget`}
         className="meter__bar"
       >
@@ -275,7 +293,7 @@ export function Meter({ block: b }) {
       <dl className="meter__keys">
         <div><dt><i className="swatch is-spent" /> Spent</dt>
           <dd>{money(b.spent, b.currency)}</dd></div>
-        <div><dt><i className="swatch is-held" /> Being spent now</dt>
+        <div><dt><i className="swatch is-held" /> Reserved / Pending</dt>
           <dd>{money(b.held, b.currency)}</dd></div>
         <div><dt><i className="swatch is-free" /> Left to spend</dt>
           <dd>{money(b.available, b.currency)}</dd></div>
@@ -287,7 +305,7 @@ export function Meter({ block: b }) {
       {(b.revoked || b.frozen) && (
         <p className="meter__stop">
           {b.revoked ? 'You cancelled this budget. Nothing more can be spent.'
-            : `This budget is frozen: ${b.freeze_reason}`}
+            : `This budget is frozen — ${b.freeze_reason}`}
         </p>
       )}
     </div>
@@ -306,33 +324,44 @@ export function Markdown({ text }) {
   );
 }
 
-// Loading, then content, then a visible error. Nothing on this site is allowed
-// to fail into a blank box.
+// Loading, then content, then a visible error with retry. Nothing on this site
+// is allowed to fail into a blank box.
 export function useAsync(work, deps = []) {
-  const [state, setState] = useState({ loading: true });
+  const [state, setState] = useState({ loading: true, error: null, data: null });
+  const [nonce, setNonce] = useState(0);
+  const retry = () => setNonce(n => n + 1);
+
   useEffect(() => {
     let live = true;
-    setState({ loading: true });
+    setState(s => ({ ...s, loading: true, error: null }));
     Promise.resolve()
       .then(work)
-      .then(data => live && setState({ data }))
-      .catch(e => live && setState({ error: e.message }));
+      .then(data => live && setState({ data, loading: false, error: null }))
+      .catch(e => live && setState({ error: e.message, loading: false, data: null }));
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
-  return state;
+  }, [...deps, nonce]);
+  return { ...state, retry };
 }
 
 export function Async({ state, height = '6rem', children }) {
   if (state.loading) return <Skeleton height={height} />;
-  if (state.error) return <ErrorLine>could not load this: {state.error}</ErrorLine>;
+  if (state.error) {
+    return (
+      <div className="flex flex-wrap items-center gap-3 py-2">
+        <ErrorLine>could not load this — {state.error}</ErrorLine>
+        {state.retry && (
+          <button type="button" className="btn btn--outline text-xs px-2 py-1" onClick={state.retry}>
+            Retry
+          </button>
+        )}
+      </div>
+    );
+  }
   return children(state.data);
 }
 
-// The live decision feed. Byte-cursor polling: the server returns only what was
-// appended, which is nothing at all on most polls. It slows to 10s when the tab
-// is hidden, so several tabs open during a panel do not keep the free instance
-// busy for nobody.
+// The live decision feed with exponential backoff on errors and clean recovery.
 export function useFeed(api, onChange) {
   const [rows, setRows] = useState([]);
   const [error, setError] = useState(null);
@@ -340,21 +369,25 @@ export function useFeed(api, onChange) {
   onChangeRef.current = onChange;
 
   useEffect(() => {
-    let cursor = null, timer = null, live = true;
+    let cursor = null, timer = null, live = true, backoff = 2000;
     async function tick() {
       try {
         const data = await api('/api/feed' + (cursor === null ? '' : '?after=' + cursor));
         if (!live) return;
         cursor = data.cursor;
+        setError(null);
+        backoff = 2000;
         if (data.records.length) {
           setRows(prev => [...prev, ...data.records].slice(-40));
-          setError(null);
           if (onChangeRef.current) onChangeRef.current();
         }
       } catch (e) {
-        if (live) setError(e.message);
+        if (live) {
+          setError(e.message);
+          backoff = Math.min(backoff * 2, 16000);
+        }
       }
-      if (live) timer = setTimeout(tick, document.hidden ? 10000 : 2000);
+      if (live) timer = setTimeout(tick, document.hidden ? 10000 : backoff);
     }
     tick();
     const wake = () => { clearTimeout(timer); timer = setTimeout(tick, 200); };

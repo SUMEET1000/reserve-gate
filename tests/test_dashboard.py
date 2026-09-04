@@ -45,7 +45,10 @@ def _isolated(tmp_path, monkeypatch):
 @pytest.fixture
 def app():
     routes = [Route(p, h, methods=m) for p, m, h in dashboard.ROUTES]
-    return server.bearer_auth(server.gzip_dashboard(Starlette(routes=routes)))
+    # Same order as the uvicorn call in server.main, error_pages outermost, so
+    # a test sees the status and the body a browser would.
+    return server.error_pages(
+        server.bearer_auth(server.gzip_dashboard(Starlette(routes=routes))))
 
 
 @pytest.fixture
@@ -86,16 +89,95 @@ def test_the_mcp_endpoint_still_needs_the_agent_token(c):
 
 
 def test_a_path_that_is_not_on_the_list_is_not_public(c):
-    for path in ("/web/app.css", "/api", "/api/", "/blockade", "/index.html"):
+    """404, because these are not routes - it was 401 until 4 Sept 2026, which
+    told someone who mistyped a URL they had a credentials problem. The status
+    is the smaller half of this test. The half that matters is the second
+    assertion: whatever the status, nothing off disk comes back."""
+    for path in ("/web/app.css", "/api", "/api/", "/index.html"):
         assert path not in server.OPEN_PATHS
-        assert c.get(path).status_code == 401, path
+        r = c.get(path)
+        assert r.status_code == 404, path
+        assert "--color-paper" not in r.text, path
+
+    # /blockade is the exception, and deliberately so. ADMIN_PATHS holds the
+    # bare string "/block", so every path starting with those six characters is
+    # matched and asked for the admin token. That is the guard failing closed on
+    # a typo, which is the direction a guard is supposed to fail, so the prefix
+    # is left alone and the odd status is recorded here instead.
+    r = c.get("/blockade")
+    assert r.status_code == 401
+    assert "--color-paper" not in r.text
 
 
 def test_traversal_out_of_the_web_folder_is_not_a_route_at_all(c):
     """Static files are served from an explicit filename map, so there is no
     caller-supplied path to traverse with."""
     for path in ("/web/../../.env", "/../.env", "/app.css/../../.env"):
-        assert c.get(path).status_code == 401, path
+        r = c.get(path)
+        assert r.status_code == 404, path
+        # The refusal is not the property. Not serving the file is.
+        assert "RESERVE_GATE" not in r.text, path
+        assert "rzp_" not in r.text, path
+
+
+# --------------------------------------------------------------- error pages
+
+HTML = {"accept": "text/html,application/xhtml+xml"}
+
+
+def test_a_browser_gets_a_page_for_an_address_that_is_not_here(c):
+    r = c.get("/not-a-page", headers=HTML)
+    assert r.status_code == 404
+    assert r.headers["content-type"].startswith("text/html")
+    assert "Not found" in r.text
+    # Self-contained on purpose: this is the page shown when something is
+    # already broken, so it must not need a second request to succeed.
+    assert "<style>" in r.text and "app.css" not in r.text
+
+
+def test_an_api_client_gets_json_for_the_same_address(c):
+    r = c.get("/not-a-page")
+    assert r.status_code == 404
+    assert r.headers["content-type"].startswith("application/json")
+    assert r.json() == {"error": "not_found"}
+
+
+def test_the_wrong_method_gets_a_page_not_a_framework_default(c):
+    r = c.post("/", headers=HTML)
+    assert r.status_code == 405
+    assert "Wrong method" in r.text
+
+
+def test_a_crash_never_reaches_the_visitor(app, monkeypatch):
+    """The one that matters. A handler raising with a filename, a line number
+    and a key in the message must produce a page carrying none of them."""
+    secret = "C:/Users/x/src/ledger.py line 412 rzp_test_LEAKED"
+
+    async def boom(request):
+        raise RuntimeError(secret)
+
+    routes = [Route(p, boom if p == "/" else h, methods=m)
+              for p, m, h in dashboard.ROUTES]
+    crashing = server.error_pages(
+        server.bearer_auth(server.gzip_dashboard(Starlette(routes=routes))))
+
+    with TestClient(crashing, raise_server_exceptions=False) as cc:
+        for headers in (HTML, {"accept": "application/json"}):
+            r = cc.get("/", headers=headers)
+            assert r.status_code == 500
+            for leaked in ("ledger.py", "line 412", "rzp_test",
+                           "RuntimeError", "Traceback", "src/"):
+                assert leaked not in r.text, (headers, leaked)
+
+
+def test_a_handlers_own_error_body_is_not_overwritten(c):
+    """The swap keys on text/plain, which is the framework default and never
+    something this host writes. A 404 a handler raised on purpose keeps the
+    reason the API contract promises."""
+    r = c.get("/api/trace?call_id=nope")
+    if r.status_code == 404:
+        assert r.headers["content-type"].startswith("application/json")
+        assert r.json() != {"error": "not_found"}
 
 
 # ------------------------------------------------------------------ no leaks
@@ -664,15 +746,32 @@ def test_every_page_the_navigation_offers_is_served(c):
     for path in ("/", "/attack", "/mutate", "/trace", "/rules", "/evidence"):
         assert c.get(path).headers["content-type"].startswith("text/html")
     assert c.get("/razorpay-logo.png").headers["content-type"] == "image/png"
+    assert c.get("/favicon.svg").headers["content-type"] == "image/svg+xml"
+    assert c.get("/favicon.png").headers["content-type"] == "image/png"
     assert c.get("/fonts/BarlowCondensed-normal-700.woff2").headers["content-type"] == "font/woff2"
     assert c.get("/fonts/Cormorant-normal-500.woff2").headers["content-type"] == "font/woff2"
     assert c.get("/fonts/MonaSans-normal-700.woff2").headers["content-type"] == "font/woff2"
     # Three rejected display faces left disk on 2 Sept 2026. A dropped path leaves
     # the public carve-out with it and falls through to bearer auth, so 401 - not
     # 404 - is what proves it is no longer served to a visitor.
-    assert c.get("/fonts/InstrumentSerif-normal-400.woff2").status_code == 401
-    assert c.get("/fonts/BodoniModa-normal-700.woff2").status_code == 401
-    assert c.get("/fonts/YesevaOne-normal-400.woff2").status_code == 401
+    assert c.get("/fonts/InstrumentSerif-normal-400.woff2").status_code == 404
+    assert c.get("/fonts/BodoniModa-normal-700.woff2").status_code == 404
+    assert c.get("/fonts/YesevaOne-normal-400.woff2").status_code == 404
+
+
+def test_the_hero_chunk_is_built_and_served(c):
+    """Both JS files, non-empty. static() answers a missing file with b"" so a
+    200 alone proves nothing: a forgotten `npm run build` would serve an empty
+    /app-HeroScene.js and the hero would silently not draw."""
+    for path in ("/app.js", "/app-HeroScene.js"):
+        r = c.get(path)
+        assert r.status_code == 200, path
+        assert r.headers["content-type"] == "text/javascript; charset=utf-8", path
+        assert len(r.content) > 10_000, (path, len(r.content))
+    # The split only pays off while the entry stays free of three.js; a static
+    # import anywhere would fold the renderer back into every page's download.
+    assert "WebGLRenderer" in c.get("/app-HeroScene.js").text
+    assert "WebGLRenderer" not in c.get("/app.js").text
 
 
 def test_the_catalogue_and_the_agents_basket_cannot_drift(c):

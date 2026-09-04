@@ -63,9 +63,11 @@ gives the same answer, and the answer can be explained.
 ## Try it yourself, no signup
 
 Open <https://reserve-gate.onrender.com>. You get your own spending block. You
-can shop with it, try to overspend it, revoke it mid-session, paste an attack
-into a product name, delete one of the gate's own rules and watch the score
-change, and pay a real ₹100 Razorpay test-mode order with a test card.
+can ask Gemini to propose a purchase and watch the deterministic gate allow,
+hold, or block its tool call; shop with a repeatable fixed basket; try to
+overspend; revoke the block mid-session; paste an attack into a product name;
+delete one of the gate's own rules and watch the score change; and pay a real
+₹100 Razorpay test-mode order with a test card.
 
 No key, no account, no real money. First load takes about 32 seconds while the
 free server wakes up.
@@ -137,6 +139,14 @@ pages remain under **Technical proof**. Sandbox decisions are genuine
 `decide()` calls against real SQLite on the same `BEGIN IMMEDIATE` path and land
 in the same hash-chained log; they never call Razorpay.
 
+The AI checkpoint calls Gemini server-side and gives it one tool:
+`create_order`. The model proposes the item and amount; the existing
+`ledger.authorize()` path makes the decision. A live HOLD can be approved only
+by the same visitor session. If no model key is configured or the demo budget is
+spent, the panel serves `web/recorded_llm_run.json` and labels it **RECORDED
+FALLBACK — NOT LIVE**; recorded rows never receive an approval control. The
+fixed basket remains beside it as the repeatable, no-key path.
+
 The final checkpoint can create one fixed ₹100 Razorpay test-mode order and
 capture its returned payment through the same authorization, reservation,
 upstream, and settlement functions used by MCP. It accepts no amount, tool,
@@ -155,9 +165,9 @@ require their bearer tokens. The admin prefixes are matched *before* the public
 list, so a page path can never widen into an admin route.
 
 The pages are a React application built with Vite and Tailwind CSS; the source
-is in `frontend/` and the build writes exactly two files, `web/app.js` and
-`web/app.css`, over the two filenames `src/dashboard.py` already routes. Both are
-**committed**, so Render's build command stays `pip install` and the
+is in `frontend/` and the build writes exactly three files: `web/app.js`,
+`web/app.css`, and the lazy-loaded `web/app-HeroScene.js`. All three are
+**committed** and routed by `src/dashboard.py`, so Render's build command stays `pip install` and the
 three-command repro below needs no npm. Rebuild after changing anything under
 `frontend/`:
 

@@ -773,6 +773,112 @@ def test_a_model_fault_falls_back_instead_of_erroring(c, monkeypatch):
     assert "429" not in r.text, "an upstream error string must not reach the page"
 
 
+def _one_turn(amount, item="television"):
+    """A fake _ask_model that runs the real gate.
+
+    Only the model is faked. The tool body is what `_ask_model`'s own inner
+    `create_order` does - `place()` on this visitor's block - so the verdict, the
+    hold and the audit record in these tests are the ones the live path produces.
+    """
+    async def fake(question, token):
+        conn = ledger.connect()
+        try:
+            cfg, caller = dashboard.config_of(token), dashboard.caller_of(token)
+            ledger.init(conn, cfg, caller_id=caller)
+            gate = dashboard.place(conn, caller, cfg, token, amount=amount,
+                                   currency="INR", receipt=item, key=None,
+                                   idem_args={"amount": amount, "item": item})
+        finally:
+            conn.close()
+        return ([{"tool": "create_order", "amount": amount, "currency": "INR",
+                  "item": item, "gate": gate}], "here is what happened", 2)
+    return fake
+
+
+def test_a_live_reply_carries_everything_the_page_draws_from(c, monkeypatch):
+    """The response shape is a contract now, and nothing pinned it.
+
+    The page reads exactly these keys, and it decides the LIVE badge from `live`
+    alone. A rename here would leave a judge looking at a page that says RECORDED
+    over a live model, or at no verdict at all, and every other test would pass.
+    """
+    monkeypatch.setenv("GEMINI_API_KEY", "not-a-real-key")
+    monkeypatch.setattr(dashboard, "_ask_model", _one_turn(780000))
+
+    r = c.post("/api/ask", json={"question": "buy a television"}).json()
+
+    assert r["live"] is True
+    assert r["model"] == dashboard.LLM_MODEL
+    assert r["questions_left"] == dashboard.LLM_QUESTIONS_PER_VISITOR - 1
+    assert r["question"] == "buy a television"
+    turn, = r["turns"]
+    assert turn["tool"] == "create_order"
+    assert turn["amount"] == 780000 and turn["currency"] == "INR"
+    assert turn["item"] == "television"
+    # Over the 500000 per-call cap, so this is R5 rather than any refusal.
+    assert turn["gate"]["outcome"] == "BLOCK" and turn["gate"]["rule"] == "R5"
+    assert r["answer"]
+
+
+def test_a_hold_the_model_asked_for_is_approvable_by_the_visitor_and_nobody_else(app, monkeypatch):
+    """The one path the browser change adds: a model proposes, the gate holds, the
+    visitor releases it.
+
+    It reuses `/api/approve` untouched, which is only safe because `place()` binds
+    the hold to the session cookie that took it. The second half is what proves
+    that - the same call id from a different cookie jar is not found.
+    """
+    monkeypatch.setenv("GEMINI_API_KEY", "not-a-real-key")
+    # Between approval_over (200000) and max_txn (500000), so it holds.
+    monkeypatch.setattr(dashboard, "_ask_model", _one_turn(350000, item="keyboard"))
+
+    visitor = TestClient(app)
+    asked = visitor.post("/api/ask", json={"question": "buy a keyboard"}).json()
+    gate = asked["turns"][0]["gate"]
+    assert gate["outcome"] == "HOLD"
+    call_id = gate["call_id"]
+    assert call_id, "a HOLD has to hand back the id /api/approve takes"
+
+    stranger = other(app)
+    refused = stranger.post("/api/approve", json={"call_id": call_id})
+    assert refused.status_code == 404
+    assert call_id not in refused.text
+
+    ok = visitor.post("/api/approve", json={"call_id": call_id})
+    assert ok.status_code == 200 and ok.json()["approved"] == call_id
+    # Single use, exactly as it is for the fixed test's holds.
+    assert visitor.post("/api/approve", json={"call_id": call_id}).status_code == 404
+
+
+def test_the_recorded_fallback_hands_back_no_approvable_hold(c, monkeypatch):
+    """A fallback is a real captured run, but it is not this session's.
+
+    The browser strips `call_id` whenever `live` is not exactly true. This is the
+    other half of that guard: even if a future recording were captured on a HOLD,
+    its id belongs to no live session and /api/approve refuses it - so the two
+    halves fail closed independently.
+    """
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    r = c.post("/api/ask", json={"question": "buy a television"}).json()
+    assert r["live"] is False
+    for turn in r["turns"]:
+        call_id = turn["gate"].get("call_id")
+        if call_id is not None:
+            assert c.post("/api/approve", json={"call_id": call_id}).status_code == 404
+
+
+def test_no_secret_reaches_the_built_bundle():
+    """The demo pages are served from committed build output, so a secret that
+    reached `frontend/` would be published rather than merely logged. Cheap to
+    check and impossible to remember."""
+    import re
+    leaks = re.compile(r"GEMINI_API_KEY|AIza[0-9A-Za-z_-]{10,}|rzp_live_[A-Za-z0-9]+"
+                       r"|rzp_test_[A-Za-z0-9]{6,}|RESERVE_GATE_(ADMIN_)?TOKEN")
+    for name in ("app.js", "app.css", "app-HeroScene.js"):
+        text = (ROOT / "web" / name).read_text(encoding="utf-8", errors="replace")
+        assert not leaks.search(text), f"{name} carries something that looks like a secret"
+
+
 def test_the_recorded_run_is_a_real_capture():
     run = dashboard.recorded_run()
     assert run["turns"][0]["gate"]["outcome"] == "BLOCK"

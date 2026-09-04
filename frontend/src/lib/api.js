@@ -85,6 +85,64 @@ export function plainReason(d, amount = d && d.detail && d.detail.amount, curren
   return reason;
 }
 
+// One /api/ask reply, turned into the rows the guided demo's step 03 already draws.
+// A pure function and not a component: it is the whole contract between the model
+// box and the decision list, and this way the Node self-check can hold it to that
+// contract without a browser.
+//
+// Two properties it exists to carry. The fields are listed one by one rather than
+// spread, so the row is an allowlist: a key the server grows later, or one a model
+// talked its way into a tool argument, reaches the page only when someone adds it
+// here. And `call_id` - the handle POST /api/approve takes - survives only when the
+// server said `live` is exactly true: the recorded fallback is a real captured run,
+// but it is not this session's, so approving one of its holds would be inventing an
+// approval that never happened. That rests on the response saying so, never on what
+// the recording happens to contain today.
+export function askRows(data, seed = 0) {
+  const turns = data && Array.isArray(data.turns) ? data.turns : [];
+  const live = data && data.live === true;
+  return turns.map((raw, i) => {
+    // A malformed turn is still a turn: the sequence has to show that the model
+    // proposed something, so a null one draws as an unnamed request rather than
+    // taking the whole panel down with it.
+    const turn = raw || {};
+    const gate = turn.gate || {};
+    return {
+      // The list keys on this, and a model may propose the same item twice. `seed`
+      // is what makes it unique across questions rather than within one answer:
+      // numbering from 0 every time gave question two's first row the same key as
+      // question one's, and React's behaviour on a duplicate key is undefined -
+      // observed as an "Approved" flash landing on a row that was not approved.
+      key: `ai-${seed + i}`,
+      source: 'ai',
+      // Carried onto the row, not just used to strip `call_id` below. The decision
+      // list further down the page accumulates rows from several questions, and a
+      // reader whose whole job is telling a live verdict from a replayed one cannot
+      // do it if the row does not say which it was.
+      live,
+      tool: turn.tool,
+      name: turn.item || turn.tool || 'unnamed request',
+      // Checked here rather than at the point it is drawn, because the tally
+      // already did `Number(r.paise) || 0` and an unchecked row let the same event
+      // print one figure and be counted as another. Anything that is not already a
+      // finite number becomes null, which money() renders as an em dash.
+      //
+      // Deliberately not `Number(x)`: that turns null, undefined-via-null and ""
+      // into 0, so an amount the model never stated would render as a confident
+      // ₹0.00. The server sends paise as an integer, so a non-number here is a
+      // malformed turn and is shown as one.
+      paise: typeof turn.amount === 'number' && Number.isFinite(turn.amount)
+        ? turn.amount : null,
+      currency: turn.currency || 'INR',
+      outcome: gate.outcome,
+      rule: gate.rule,
+      reason: gate.reason,
+      detail: gate.detail,
+      call_id: live ? gate.call_id : undefined,
+    };
+  });
+}
+
 // Nav labels are what the page lets you do, not what the file is called. The
 // route stays the short technical name because it is in the README and in links
 // a judge may already hold.

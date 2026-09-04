@@ -5,6 +5,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GammaCorrectionShader } from 'three/addons/shaders/GammaCorrectionShader.js';
+import { heroSamples, isLowPowerHero } from '../lib/heroQuality.js';
 
 // The hero, as one scene: an animated cobalt field and the glass portal that
 // bends it. They are together in here rather than in a canvas plus an SVG layer
@@ -39,7 +40,8 @@ import { GammaCorrectionShader } from 'three/addons/shaders/GammaCorrectionShade
 //                    pre-scale, so the key strip is 96 * 0.81 = 78 px
 //   lights           key 0xffffff 0.30, rim 0xffffff 0.45
 //   renderer         antialias false, ACES, toneMappingExposure 1.08
-//   post chain       samples 4 target -> RenderPass -> UnrealBloomPass(0.52,
+//   post chain       samples 4 desktop / 2 mobile or low-power -> RenderPass ->
+//                    UnrealBloomPass(0.52,
 //                    0.34, 0.88) -> lens uAmount 0.0011 -> GammaCorrectionShader
 //   placement        resize()'s gate x/y/scale/yaw, draw()'s gate rotation and
 //                    position
@@ -473,8 +475,8 @@ function mount(host) {
     renderer = new THREE.WebGLRenderer({
       // Off, and it is not a downgrade: since the post chain arrived the scene
       // is drawn into the composer's own target and never into this buffer, so
-      // MSAA asked for here was allocated and then never sampled. The
-      // multisampled composer target below is where it actually happens now.
+      // MSAA asked for here was allocated and then never sampled. The composer
+      // target below owns anti-aliasing when the device has the headroom.
       antialias: false,
       alpha: false,
       // Named explicitly: 'high-performance' wakes the discrete GPU and cost
@@ -491,9 +493,19 @@ function mount(host) {
 
   const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  // Above ~1.75 the extra pixels buy nothing through blurred glass and cost
-  // real frames on a 144 Hz panel, where a frame is 6.9 ms and not 16.7.
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+  const gl = renderer.getContext();
+  const debug = gl.getExtension('WEBGL_debug_renderer_info');
+  const mobile = navigator.userAgentData?.mobile
+    ?? /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const lowPower = isLowPowerHero({
+    gpu: gl.getParameter(debug?.UNMASKED_RENDERER_WEBGL || gl.RENDERER),
+    deviceMemory: navigator.deviceMemory,
+    hardwareConcurrency: navigator.hardwareConcurrency,
+  });
+  // Desktop devices use up to 4x MSAA, mobile tops out at 2x, and
+  // constrained devices avoid work that bloom softens away in the final image.
+  const pixelRatio = Math.min(window.devicePixelRatio, lowPower ? 1.25 : 1.75);
+  renderer.setPixelRatio(pixelRatio);
   renderer.setClearColor(FIELD, 1);
   // ACES filmic, and it reaches the lit material only. The contour field is a
   // ShaderMaterial with no tonemapping_fragment include, so the sheet keeps the
@@ -636,7 +648,7 @@ function mount(host) {
   // reference image is a chrome body whose highlights bleed light into the
   // black around them and carry a colour fringe on the edges; neither is a
   // material property, so no amount of tuning the metal produces either.
-  // Multisampled, and this is the only anti-aliasing in the scene. An
+  // On capable GPUs this is the only anti-aliasing in the scene. An
   // EffectComposer with no target of its own builds an unsampled one, so from
   // the moment this chain was added the renderer's own `antialias` flag was
   // being allocated and thrown away - every chamfer arris and every contour
@@ -647,7 +659,7 @@ function mount(host) {
   // target clips them to flat white before the pass ever sees them.
   const composerTarget = new THREE.WebGLRenderTarget(1, 1, {
     type: THREE.HalfFloatType,
-    samples: 4,
+    samples: heroSamples({ lowPower, mobile, maxSamples: gl.getParameter(gl.MAX_SAMPLES) }),
   });
   const composer = new EffectComposer(renderer, composerTarget);
   composer.addPass(new RenderPass(scene, camera));
@@ -738,7 +750,7 @@ function mount(host) {
     if (!w || !h) return;
     renderer.setSize(w, h, false);
     composer.setSize(w, h);
-    composer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+    composer.setPixelRatio(pixelRatio);
     lens.uniforms.uAspect.value = w / h;
     camera.aspect = w / h;
 
@@ -805,17 +817,21 @@ function mount(host) {
   let hoverActive = 0;
   let scroll = 0;
   let cachedHostRect = { left: 0, top: 0, width: 1, height: 1 };
+  let cachedScrollY = window.scrollY;
+
+  const hostTop = () => cachedHostRect.top - (window.scrollY - cachedScrollY);
 
   function onPointer(e) {
+    const top = hostTop();
     const inside =
       e.clientX >= cachedHostRect.left &&
       e.clientX <= cachedHostRect.left + cachedHostRect.width &&
-      e.clientY >= cachedHostRect.top &&
-      e.clientY <= cachedHostRect.top + cachedHostRect.height;
+      e.clientY >= top &&
+      e.clientY <= top + cachedHostRect.height;
     hoverTarget = inside ? 1 : 0;
     aim.set(
       ((e.clientX - cachedHostRect.left) / cachedHostRect.width) * 2 - 1,
-      ((e.clientY - cachedHostRect.top) / cachedHostRect.height) * 2 - 1,
+      ((e.clientY - top) / cachedHostRect.height) * 2 - 1,
     );
   }
 
@@ -824,7 +840,7 @@ function mount(host) {
   }
 
   function onScroll() {
-    scroll = Math.max(-1, Math.min(1, -cachedHostRect.top / window.innerHeight));
+    scroll = Math.max(-1, Math.min(1, -hostTop() / window.innerHeight));
   }
   onScroll();
 
@@ -849,7 +865,7 @@ function mount(host) {
 
   function draw() {
     const dt = Math.min(clock.getDelta(), 0.1);   // a backgrounded tab returns a huge delta
-    const t = clock.getElapsedTime();
+    const t = clock.elapsedTime;
     eased.lerp(aim, 1 - Math.exp(-dt / FOLLOW_TAU));
 
     hoverActive += (hoverTarget - hoverActive) * (1 - Math.exp(-dt / 0.15));
@@ -906,7 +922,6 @@ function mount(host) {
   }
 
   function tick() {
-    cancelAnimationFrame(frame);
     if (!visible || disposed) return;
     draw();
     frame = requestAnimationFrame(tick);
@@ -915,6 +930,8 @@ function mount(host) {
   const ro = new ResizeObserver(() => {
     resize();
     cachedHostRect = host.getBoundingClientRect();
+    cachedScrollY = window.scrollY;
+    onScroll();
     if (started && still) draw();
   });
   ro.observe(host);

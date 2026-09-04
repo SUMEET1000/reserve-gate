@@ -10,10 +10,9 @@ import { Disclosure, ErrorLine, Marginal, Note, Panel, VerdictMark } from '../co
 //
 // What went, and why it was not restyled. The four checkpoints were a 400vh
 // sticky shell driving a 400vw track sideways off vertical scroll. Three things
-// were wrong with it at once: a drawing set does not animate, Lenis now drives
-// the scroll position on every page and a scroll-derived transform fights the
-// lerp the same way scroll-snap did, and the whole apparatus existed to show
-// four things that fit on four plates. The plates are what the other six pages
+// were wrong with it at once: a drawing set does not animate, a scroll-derived
+// transform fought the browser's own movement, and the whole apparatus existed only
+// to show four things that fit on four plates. The plates are what the other six pages
 // are drawn with, so the demo is now the same drawing rather than an exception
 // inside it. Every word of copy is unchanged, and so is every call it makes.
 

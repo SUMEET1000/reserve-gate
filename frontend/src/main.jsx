@@ -1,6 +1,5 @@
 import { StrictMode, useState, useEffect, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import Lenis from 'lenis';
 import './styles.css';
 
 import Landing from './pages/Landing.jsx';
@@ -87,19 +86,6 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 // bundle failed - would get a page of invisible sections.
 document.documentElement.classList.add('js-reveal');
 
-// Inertial scroll - the reference site's most recognisable behaviour, and the
-// one thing about it that is felt rather than seen. Lenis (MIT) rather than a
-// hand-rolled wheel hijack: intercepting the wheel badly breaks keyboard paging,
-// trackpad momentum and assistive tooling, which is why a library this small
-// exists at all.
-let lenisInstance = null;
-if (document.documentElement.dataset.skin === 'night'
-    && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-  lenisInstance = new Lenis({ duration: 1.05, smoothWheel: true });
-  const raf = (t) => { lenisInstance.raf(t); requestAnimationFrame(raf); };
-  requestAnimationFrame(raf);
-}
-
 const reveal = new IntersectionObserver(entries => {
   for (const e of entries) {
     if (!e.isIntersecting) continue;
@@ -154,7 +140,6 @@ function App({ initialPage }) {
         if (push) window.history.pushState({ page: targetPage }, '', targetPath);
       }
       window.scrollTo(0, 0);
-      if (lenisInstance) lenisInstance.scrollTo(0, { immediate: true });
       requestAnimationFrame(watchReveals);
       return;
     }
@@ -176,7 +161,6 @@ function App({ initialPage }) {
       }
 
       window.scrollTo(0, 0);
-      if (lenisInstance) lenisInstance.scrollTo(0, { immediate: true });
       requestAnimationFrame(watchReveals);
 
       setStage('opening');

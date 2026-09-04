@@ -4563,8 +4563,8 @@ pre {
 
 /* --- Night Circuit motion ------------------------------------------------ */
 
-/* Lenis drives the scroll position itself, and scroll-snap fights it: the snap
-   re-targets mid-lerp and the page judders on every band boundary. */
+/* The Night Circuit reads as one continuous sheet. Proximity snapping changes
+   where a wheel gesture stops and makes native scrolling feel seized. */
 html[data-skin="night"] {
   scroll-snap-type: none;
 }

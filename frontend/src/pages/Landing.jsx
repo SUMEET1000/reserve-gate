@@ -106,7 +106,7 @@ export default function Landing() {
       <SiteHeader>
         <nav aria-label="Main navigation" className="site-nav">
           <a href="#how" className="nav-link max-sm:hidden"><Roll>How it works</Roll></a>
-          <a href="#proof" className="nav-link max-sm:hidden"><Roll>Proof</Roll></a>
+          <a href="/evidence" className="nav-link max-sm:hidden"><Roll>Proof</Roll></a>
           <Button href="/demo" variant="primary" className="max-sm:px-3">Try the guided demo</Button>
         </nav>
       </SiteHeader>

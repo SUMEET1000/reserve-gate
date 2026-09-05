@@ -153,6 +153,15 @@ def caller_id_for(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()[:16]
 
 
+# The two fixed idempotency keys the public live checkout uses. They are written
+# into the idempotency row in the same transaction as the reservation, so they
+# identify a real Razorpay order with no window where the marker is missing -
+# which is why the demo surface keys off these rather than off
+# live_checkout_slots.order_id, a column set by a later UPDATE that a failure
+# path can skip.
+LIVE_CHECKOUT_IDEM_KEYS = ("public-live-checkout-100", "public-live-capture-100")
+
+
 def args_hash(call: Call, idempotency_args: dict | None = None) -> str:
     """What an idempotency key is bound to. Same key, different parameters is a
     conflict rather than a replay (G16), or an attacker registers a key against

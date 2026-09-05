@@ -276,14 +276,14 @@ async def live_checkout_order(caller: str, cfg) -> dict:
     amount = 10_000
     args = {"amount": amount, "currency": "INR", "receipt": "reserve-gate-demo-100"}
     call = Call(tool="create_order", caller_id=caller, amount=amount, currency="INR",
-                idem_key="public-live-checkout-100")
+                idem_key=ledger.LIVE_CHECKOUT_IDEM_KEYS[0])
     return await _gated(call, args, cfg)
 
 
 async def live_checkout_capture(caller: str, cfg, payment_id: str,
                                 order_id: str) -> dict:
     return await _capture_for(caller, payment_id, cfg=cfg, expected_order_id=order_id,
-                              idempotency_key="public-live-capture-100")
+                              idempotency_key=ledger.LIVE_CHECKOUT_IDEM_KEYS[1])
 
 
 def _owned(order_id: str | None) -> bool:

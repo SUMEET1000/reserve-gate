@@ -845,11 +845,22 @@ async def api_webhook_replay(request):
     conn = ledger.connect()
     try:
         ledger.init(conn, config_of(token), caller_id=caller)
+        # Sandbox orders only. A live checkout puts a real Razorpay order on this
+        # same cookie and it would otherwise be the newest held row here, so a
+        # demo button settled a real order with a fake pay_demo_ id and left the
+        # ledger claiming a debit Razorpay never made. No money moves either way;
+        # what breaks is the ledger agreeing with the payment processor, which is
+        # the claim the whole page exists to make.
         r = conn.execute(
             "SELECT r.order_id, r.amount, r.currency FROM reservations r"
             " JOIN blocks b ON b.block_id = r.block_id"
             " WHERE b.caller_id = ? AND r.state = 'held' AND r.order_id IS NOT NULL"
-            " ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1", (caller,)).fetchone()
+            " AND r.reservation_id NOT IN ("
+            "   SELECT reservation_id FROM idempotency"
+            "    WHERE caller_id = ? AND reservation_id IS NOT NULL AND key IN (%s))"
+            " ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1"
+            % ",".join("?" * len(ledger.LIVE_CHECKOUT_IDEM_KEYS)),
+            (caller, caller, *ledger.LIVE_CHECKOUT_IDEM_KEYS)).fetchone()
         if r is None:
             return reply({"error": "buy something first - a webhook settles an order the"
                           " block is already holding"}, token, request, 409)

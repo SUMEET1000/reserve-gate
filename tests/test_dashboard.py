@@ -521,6 +521,41 @@ def test_a_wrong_signature_is_rejected_before_the_body_is_parsed(c):
     assert r["block"]["spent"] == 0
 
 
+def test_the_demo_webhook_never_settles_a_real_live_checkout_order(c):
+    """The demo replay settles this visitor's newest held order, and a live
+    checkout puts a real Razorpay order on the same cookie. Settling that one
+    marked a real order paid with a fake pay_demo_ payment id, so the ledger
+    recorded a debit Razorpay never made - no money moved, but the ledger stopped
+    agreeing with the payment processor, which is the claim the page exists to
+    make.
+
+    Both halves are in one test on purpose. The live order must survive, and the
+    sandbox order must still settle, or a fix that simply switched the demo
+    button off would pass this.
+    """
+    from src.policy import Call
+    c.post("/api/shop", json={})
+    token = c.cookies[dashboard.COOKIE]
+    caller = dashboard.caller_of(token)
+
+    conn = ledger.connect()
+    _, live = ledger.authorize(
+        conn, Call(tool="create_order", caller_id=caller, amount=10000, currency="INR",
+                   idem_key=ledger.LIVE_CHECKOUT_IDEM_KEYS[0]), dashboard.config_of(token))
+    ledger.settle_order(conn, live, order_id="order_live_real",
+                        result={"id": "order_live_real"})
+    conn.close()
+
+    r = c.post("/api/webhook-replay", json={"variant": "apply"}).json()
+
+    conn = ledger.connect()
+    state = conn.execute("SELECT state, payment_id FROM reservations WHERE order_id = ?",
+                         ("order_live_real",)).fetchone()
+    conn.close()
+    assert (state["state"], state["payment_id"]) == ("held", None), dict(state)
+    assert r["applied"] is True and r["block"]["spent"] > 0      # the sandbox order still settles
+
+
 def test_the_same_event_twice_is_a_no_op_the_second_time(c):
     c.post("/api/shop", json={})
     first = c.post("/api/webhook-replay", json={"variant": "apply"}).json()

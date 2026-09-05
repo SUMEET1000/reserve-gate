@@ -311,7 +311,17 @@ def test_a_derived_key_stops_a_retry_but_expires(conn):
     assert d3.outcome == ALLOW and d3.rule == "", d3
 
 
-def test_derived_keys_ignore_order_labels_but_client_keys_bind_them(conn):
+def test_a_different_label_at_the_same_price_conflicts_rather_than_replaying(conn):
+    """Two invoices for one amount inside the derived key's five minutes used to
+    alias: the second was answered with the first order id and the first
+    customer, and nothing reported it. The key is still money-only, so no second
+    order is forwarded (E13 holds); what changed is that the mismatch is now a
+    G16 conflict instead of a silent wrong answer.
+
+    test_notes_are_hashed_canonically is the control for this one: an identical
+    payload written in a different key order still replays, so this is binding
+    the payload rather than simply refusing every second call.
+    """
     first = {"amount": 50000, "currency": "INR", "receipt": "keyboard"}
     second = {"amount": 50000, "currency": "INR", "receipt": "monitor"}
     d, ref = ledger.authorize(conn, order(50000), CFG, now=NOW,
@@ -320,7 +330,7 @@ def test_derived_keys_ignore_order_labels_but_client_keys_bind_them(conn):
 
     retry, _ = ledger.authorize(conn, order(50000), CFG, now=NOW,
                                 idempotency_args=second)
-    assert retry.rule == "R7" and retry.detail["replay"] is True, retry
+    assert retry.outcome == BLOCK and retry.rule == "G16", retry
 
     keyed = order(50000, key="same-client-key")
     ledger.authorize(conn, keyed, CFG, now=NOW, idempotency_args=first)

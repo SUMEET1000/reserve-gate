@@ -159,9 +159,11 @@ def args_hash(call: Call, idempotency_args: dict | None = None) -> str:
     a 1-rupee call and the victim's real call returns its 'success'.
 
     The caller is part of the digest, as R7 specifies. Without
-    `idempotency_args` this is the stable, money-only derived key: model-written
-    notes and receipts may change when a retry is regenerated. Full upstream
-    arguments are included only to bind a client-supplied key for G16.
+    `idempotency_args` this is the stable, money-only *key*: model-written notes
+    and receipts may change when a retry is regenerated, and a key that moved
+    with them would mint a second real order. Every key, derived or client-
+    supplied, is *bound* to the full upstream arguments, so a payload that does
+    not match what was executed is a G16 conflict rather than a replay.
     """
     # Currency is upper-cased to match R0, which treats "inr" and "INR" as one
     # call. Hashing them apart would derive two keys for a single purchase, and
@@ -357,7 +359,14 @@ def authorize(conn: sqlite3.Connection, call: Call, config: Config, *,
         # changed amount minted a second key instead of conflicting (G16).
         client_key = call.idem_key or None
         key = client_key or args_hash(call)
-        bound_hash = args_hash(call, idempotency_args) if client_key else args_hash(call)
+        # The key stays money-only when it is derived, so a retry that rewords
+        # its receipt still collides and cannot mint a second real order (E13).
+        # What it is *bound* to is the full payload either way: binding only the
+        # money let two different invoices for the same amount inside the five
+        # minutes alias, and the second was answered with the first order id and
+        # the first customer. A conflict is the honest answer to that - it never
+        # forwards a second call, and it never claims invoice B was created.
+        bound_hash = args_hash(call, idempotency_args)
         derived = client_key is None
         _expire_stale(conn, now)
         window = iso(now - timedelta(minutes=config.velocity_window_minutes))
@@ -420,6 +429,20 @@ def authorize(conn: sqlite3.Connection, call: Call, config: Config, *,
                  block_id=state.block.block_id if state.block else None,
                  reservation_id=reservation_id, detail=d.detail)
     return d, ref
+
+
+def owns_order(conn: sqlite3.Connection, caller_id: str, order_id: str) -> bool:
+    """Whether this caller's block is the one that reserved this order.
+
+    The same join _state uses for a capture, for the same reason: an order id is
+    Razorpay's handle and anyone who saw the order holds it. The read tools used
+    no join at all, so one caller could fetch another's order and payment,
+    including the buyer's email.
+    """
+    return conn.execute(
+        "SELECT 1 FROM reservations r JOIN blocks b ON b.block_id = r.block_id"
+        " WHERE r.order_id = ? AND b.caller_id = ?",
+        (order_id, caller_id)).fetchone() is not None
 
 
 def settle_order(conn: sqlite3.Connection, ref: Ref, *, order_id: str, result: dict) -> None:

@@ -126,9 +126,11 @@ async def _settle(conn, tool: str, ref: ledger.Ref, args: dict) -> Any:
     try:
         result = await call_razorpay(tool, args)
     except UpstreamError as e:
-        if e.known:
+        if e.known and tool != "capture_payment":
             # B25. Razorpay answered and refused, so the call did not happen and
-            # the block must not be charged for it.
+            # the block must not be charged for it. Only an order takes this
+            # branch: an order Razorpay may or may not have created moves no
+            # money until something captures it.
             ledger.release(conn, ref, reason=str(e))
         else:
             # G14 / B25b. A timeout says nothing about whether Razorpay acted.
@@ -136,6 +138,12 @@ async def _settle(conn, tool: str, ref: ledger.Ref, args: dict) -> Any:
             # the TTL and waits for reconciliation. An order's hold is not
             # marked and expires normally by design: an order Razorpay may or
             # may not have created is not money moved until it is captured.
+            #
+            # A capture reaches here however the error arrived, because no error
+            # text proves a capture did not happen and "already captured" proves
+            # the opposite. Releasing on one returned the hold for money that had
+            # moved, and a second attempt then spent it again: measured 6 Sept
+            # 2026 at 1,200,000 paise captured against a 1,000,000 block.
             audit.record(event="outcome_unknown", tool=tool, reservation_id=ref.reservation_id,
                          error=str(e), note="hold kept: the upstream outcome is unknown")
         raise ValueError(f"{tool} failed upstream: {e}") from None
@@ -177,8 +185,11 @@ async def _gated(call: Call, args: dict, cfg=None) -> Any:
 
 
 async def _read(tool: str, args: dict) -> Any:
-    """Reads are not gated. They are logged at a lower level, so the audit trail
-    shows the scope of the gate honestly rather than implying it covers them."""
+    """Forward a read. The policy engine does not judge reads, and they are
+    logged at a lower level so the audit trail shows the scope of the gate
+    honestly rather than implying it covers them. Ownership is not this
+    function's job: the two read tools check it before and after calling here,
+    because an order id is Razorpay's handle and anyone who saw it holds it."""
     try:
         result = await call_razorpay(tool, args)
     except UpstreamError as e:
@@ -275,16 +286,33 @@ async def live_checkout_capture(caller: str, cfg, payment_id: str,
                               idempotency_key="public-live-capture-100")
 
 
+def _owned(order_id: str | None) -> bool:
+    conn = ledger.connect()
+    try:
+        return bool(order_id) and ledger.owns_order(conn, caller_id(), order_id)
+    finally:
+        conn.close()
+
+
 @mcp.tool()
 async def fetch_order(order_id: str) -> Any:
-    """Read one order by id."""
+    """Read one order by id. Only orders this caller created here are readable."""
+    if not _owned(order_id):
+        raise ValueError("BLOCK [G2] no order by that id was created by this caller")
     return await _read("fetch_order", {"order_id": order_id})
 
 
 @mcp.tool()
 async def fetch_payment(payment_id: str) -> Any:
-    """Read one payment by id."""
-    return await _read("fetch_payment", {"payment_id": payment_id})
+    """Read one payment by id. Only payments against this caller's own orders
+    are readable."""
+    # The payment has to be resolved before its order is known, so the check
+    # runs after the fetch and the reply is dropped rather than returned. The
+    # caller learns only that it does not own it.
+    payment = await _read("fetch_payment", {"payment_id": payment_id})
+    if not _owned(payment.get("order_id")):
+        raise ValueError("BLOCK [G2] that payment is not against an order of this caller")
+    return payment
 
 
 @mcp.custom_route("/health", ["GET"])

@@ -182,6 +182,49 @@ def test_only_a_known_refusal_hands_the_hold_back(monkeypatch, tmp_path, known, 
     conn.close()
 
 
+def test_a_capture_hold_survives_a_known_upstream_refusal(monkeypatch, tmp_path):
+    """No upstream error text proves a capture did not happen, and "already
+    captured" proves the opposite. Releasing the hold on one handed back money
+    that had moved and the next call spent it again: 1,200,000 paise captured
+    against a 1,000,000 block, measured 6 Sept 2026.
+
+    The order in the same test is the control, and it is what stops this being
+    a test that passes by never releasing anything: an order Razorpay may or
+    may not have created moves no money, so its hold still comes back on the
+    identical refusal.
+    """
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "known-refusal.db"))
+    conn = ledger.connect()
+    cfg, caller, now = server.config(), server.caller_id(), ledger.now_utc()
+    ledger.init(conn, cfg, caller_id=caller, now=now)
+    _, order_ref = ledger.authorize(
+        conn, Call("create_order", caller, 50000, "INR", idem_key="settled-order"),
+        cfg, now=now)
+    ledger.settle_order(conn, order_ref, order_id="order_known",
+                        result={"id": "order_known"})
+    capture = Call("capture_payment", caller, 50000, "INR", order_id="order_known",
+                   payment_id="pay_known", idem_key="known-capture")
+    _, capture_ref = ledger.authorize(conn, capture, cfg, now=now)
+    held_before = ledger.snapshot(conn, caller).held
+
+    async def refuses(_tool, _args):
+        raise UpstreamError("payment already captured", known=True)
+
+    monkeypatch.setattr(server, "call_razorpay", refuses)
+    with pytest.raises(ValueError, match="already captured"):
+        asyncio.run(server._settle(conn, "capture_payment", capture_ref, {}))
+    assert ledger.snapshot(conn, caller).held == held_before
+
+    _, second_order = ledger.authorize(
+        conn, Call("create_order", caller, 70000, "INR", idem_key="doomed-order"),
+        cfg, now=now)
+    before = ledger.snapshot(conn, caller).held
+    with pytest.raises(ValueError, match="already captured"):
+        asyncio.run(server._settle(conn, "create_order", second_order, {}))
+    assert ledger.snapshot(conn, caller).held == before - 70000
+    conn.close()
+
+
 def test_an_unknown_capture_cannot_expire_before_reconciliation(monkeypatch, tmp_path):
     monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "unknown-capture.db"))
     conn = ledger.connect()
@@ -220,7 +263,7 @@ def test_an_unknown_capture_cannot_expire_before_reconciliation(monkeypatch, tmp
     conn.close()
 
 
-def test_derived_keys_ignore_reworded_order_labels(monkeypatch, tmp_path):
+def test_a_derived_key_collides_but_never_answers_for_a_different_payload(monkeypatch, tmp_path):
     monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "labelled-orders.db"))
     caller, calls = server.caller_id(), []
 
@@ -232,9 +275,14 @@ def test_derived_keys_ignore_reworded_order_labels(monkeypatch, tmp_path):
     call = Call("create_order", caller, 50000, "INR")
     first = asyncio.run(server._gated(
         call, {"amount": 50000, "currency": "INR", "receipt": "keyboard"}))
-    second = asyncio.run(server._gated(
-        call, {"amount": 50000, "currency": "INR", "receipt": "monitor"}))
-    assert (first["id"], second["id"]) == ("order_1", "order_1")
+    assert first["id"] == "order_1"
+    # Two different invoices at one price inside the five minutes used to alias:
+    # the monitor was answered with the keyboard's order id and the keyboard's
+    # customer, and nothing said so. The key still collides, so no second order
+    # is forwarded; the caller is told to supply its own key instead.
+    with pytest.raises(ValueError, match="G16"):
+        asyncio.run(server._gated(
+            call, {"amount": 50000, "currency": "INR", "receipt": "monitor"}))
     assert [args["receipt"] for args in calls] == ["keyboard"]
 
     keyed = Call("create_order", caller, 50000, "INR", idem_key="labelled-client-call")
@@ -589,3 +637,37 @@ def test_a_capture_stopped_in_the_window_keeps_its_hold(monkeypatch, tmp_path):
     block = ledger.snapshot(conn, caller)
     assert (block.held, block.spent) == (50000, 0)
     conn.close()
+
+
+def test_one_caller_cannot_read_another_callers_order_or_payment(monkeypatch, tmp_path):
+    """G2 applied to the read tools. An order id is Razorpay's handle, so a
+    caller who has merely seen one must not be able to pull the order and its
+    payment - the buyer's email is in that payload.
+
+    Both halves matter. Bob is refused, and Alice still reads her own, so a fix
+    that simply broke the read tools would fail this test rather than pass it.
+    """
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "read-scope.db"))
+    orders = {}
+
+    async def upstream(tool, args):
+        if tool == "create_order":
+            oid = f"order_{len(orders) + 1}"
+            orders[oid] = {"id": oid, "status": "created", **args}
+            return dict(orders[oid])
+        if tool == "fetch_order":
+            return dict(orders[args["order_id"]])
+        return {"id": args["payment_id"], "order_id": "order_1", "amount": 50000,
+                "currency": "INR", "status": "authorized", "email": "buyer@example.invalid"}
+
+    monkeypatch.setattr(server, "call_razorpay", upstream)
+    monkeypatch.setattr(server, "caller_id", lambda: "alice")
+    order = asyncio.run(server.create_order(50000, idempotency_key="alice-1"))
+    assert asyncio.run(server.fetch_order(order["id"]))["id"] == order["id"]
+    assert asyncio.run(server.fetch_payment("pay_1"))["email"] == "buyer@example.invalid"
+
+    monkeypatch.setattr(server, "caller_id", lambda: "bob")
+    with pytest.raises(ValueError, match="G2"):
+        asyncio.run(server.fetch_order(order["id"]))
+    with pytest.raises(ValueError, match="G2"):
+        asyncio.run(server.fetch_payment("pay_1"))

@@ -319,6 +319,7 @@ servers, so the date the results existed is one nobody in this project can move.
 
 ```console
 pip install opentimestamps-client
+ots info eval_report.md.ots            # block heights, no Bitcoin node needed
 ots verify eval_report.md.ots          # run it beside eval_report.md
 ```
 
@@ -331,11 +332,13 @@ ots verify audit_sample.jsonl.ots
 
 Stamped 4 Sept 2026 over sha256
 `065cbdfa98acc053a313118c89aff4a3bdc3ab286359a534c1fd06e8eac2afcf` and
-`851db90523dad116f8eb1389ef9c084e9d5da3becc97fe1846ad4e516efbb10b`. **The Bitcoin
-attestation is still pending** — it attaches within about a day, and until then
-`ots verify` reports *pending confirmation* and exits non-zero. Run
-`ots upgrade eval_report.md.ots` to pull the block in once it lands. What the
-command must never report is that the file does not match: `eval_report.md` is
+`851db90523dad116f8eb1389ef9c084e9d5da3becc97fe1846ad4e516efbb10b`, and **both are
+now confirmed in Bitcoin** — blocks 965447, 965448 and 965487, attached by
+`ots upgrade` on 6 Sept 2026. Reading those heights back needs nothing installed:
+`ots info <file>.ots` prints them straight out of the proof. Checking the block
+itself needs a Bitcoin node, and without one `ots verify` exits non-zero saying it
+cannot reach the chain — that is the client's limit, not the proof's. What neither
+command may ever report is that the file does not match: `eval_report.md` is
 marked `-text` in `.gitattributes` so its bytes are identical on every platform,
 and regenerating the report without re-stamping it would break the proof.
 

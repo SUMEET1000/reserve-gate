@@ -151,6 +151,44 @@ def model_rows() -> list | None:
 # the attestation path, which only `ots verify` needs.
 OTS_MAGIC = b"\x00OpenTimestamps\x00\x00Proof\x00\xbf\x89\xe2\xe8\x84\xe8\x92\x94"
 OTS_SHA256 = 0x08
+# Tag of a BitcoinBlockHeaderAttestation. Its payload is one varuint: the height
+# of the block whose merkle root the timestamp reaches.
+OTS_BITCOIN_TAG = bytes.fromhex("0588960d73d71901")
+
+
+def _varuint(buf: bytes, i: int) -> tuple[int, int]:
+    """OTS varuint: base-128 little-endian, 0x80 marks a continuing byte."""
+    value = shift = 0
+    while i < len(buf):
+        byte = buf[i]
+        i += 1
+        value |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return value, i
+        shift += 7
+    raise ValueError("truncated varuint")
+
+
+def _bitcoin_blocks(proof: bytes) -> list[int]:
+    """Every Bitcoin block height this proof attests to, read from the bytes.
+
+    An empty list means the stamp has not been upgraded yet, which is the honest
+    reading of a fresh proof: the calendars hold it and Bitcoin does not. The
+    declared payload length has to equal what the height consumed, so the eight
+    tag bytes occurring by chance inside a merkle root are not counted as one.
+    """
+    blocks, i = [], 0
+    while (i := proof.find(OTS_BITCOIN_TAG, i)) != -1:
+        i += len(OTS_BITCOIN_TAG)
+        try:
+            size, j = _varuint(proof, i)
+            height, k = _varuint(proof, j)
+        except ValueError:
+            break
+        if k - j == size:
+            blocks.append(height)
+        i = j + size
+    return sorted(set(blocks))
 
 
 def ots_proof() -> dict | None:
@@ -178,7 +216,7 @@ def ots_proof() -> dict | None:
     stamped = proof[head + 2:head + 34].hex()
     digest = hashlib.sha256(report).hexdigest()
     return {"digest": digest, "stamped": stamped, "matches": digest == stamped,
-            "proof_bytes": len(proof)}
+            "proof_bytes": len(proof), "blocks": _bitcoin_blocks(proof)}
 
 
 @functools.lru_cache(maxsize=None)

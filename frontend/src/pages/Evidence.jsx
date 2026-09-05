@@ -16,7 +16,8 @@ pip install -r requirements.txt
 pytest && python harness/run_eval.py && python -m src.buyer --scripted --overspend`;
 
 const OTS_VERIFY = `pip install opentimestamps-client
-ots verify eval_report.md.ots`;
+ots info eval_report.md.ots     # block heights, needs no Bitcoin node
+ots verify eval_report.md.ots   # full check, needs a Bitcoin node`;
 
 // A model that did not answer gets a dash in every column it has no value for,
 // so it can never be read as one that agreed.
@@ -164,15 +165,28 @@ function OtsProof({ state }) {
             </div>
           );
         }
+        // Read from the proof bytes by ots_proof(), never written here. An
+        // empty list is the honest pending state, not a missing feature.
+        const blocks = o.blocks || [];
+        const confirmed = blocks.length > 0;
         return (
           <>
             <div className="reading is-allow">
-              <h3>Attested · Bitcoin pending</h3>
+              <h3>{confirmed ? 'Attested · Confirmed in Bitcoin' : 'Attested · Bitcoin pending'}</h3>
               <p className="reading__body">
-                The test results were submitted to four OpenTimestamps calendar servers.
-                Bitcoin block confirmation is pending (attaches within ~24h); the calendar proof is already permanent.
+                {confirmed
+                  ? `The test results were submitted to four OpenTimestamps calendar servers and are now
+                     committed to the Bitcoin blockchain. The date cannot be moved afterwards by anyone,
+                     the author included.`
+                  : `The test results were submitted to four OpenTimestamps calendar servers.
+                     Bitcoin block confirmation is pending (attaches within ~24h); the calendar proof is already permanent.`}
               </p>
               <p className="reading__hash">report fingerprint {o.digest}</p>
+              {confirmed && (
+                <p className="reading__hash">
+                  {blocks.length > 1 ? 'Bitcoin blocks' : 'Bitcoin block'} {blocks.join(' · ')}
+                </p>
+              )}
             </div>
 
             <div className="mt-6">
@@ -181,8 +195,12 @@ function OtsProof({ state }) {
               </Note>
               <CodeBlock code={OTS_VERIFY} />
               <p className="note mt-3">
-                While Bitcoin block confirmation is pending, the command checks against the calendar servers
-                and reports pending confirmation. It will never report that the file does not match.
+                {confirmed
+                  ? `The block heights above are read out of the proof file, which needs nothing installed.
+                     Checking the block itself needs a Bitcoin node; without one the client says it cannot
+                     reach the chain. Neither command will ever report that the file does not match.`
+                  : `While Bitcoin block confirmation is pending, the command checks against the calendar servers
+                     and reports pending confirmation. It will never report that the file does not match.`}
               </p>
             </div>
           </>

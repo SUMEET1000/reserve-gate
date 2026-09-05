@@ -1036,3 +1036,28 @@ def test_a_missing_or_malformed_proof_is_an_empty_state_not_a_crash(tmp_path, mo
 
     (tmp_path / "eval_report.md.ots").write_bytes(dashboard.OTS_MAGIC + b"\x01\x08short")
     assert dashboard.ots_proof() is None                      # right magic, truncated digest
+
+
+def test_the_panel_reads_the_bitcoin_block_out_of_the_proof(tmp_path, monkeypatch):
+    """A confirmed block is parsed from the proof, never pasted into the page.
+
+    Three states, because only the contrast between them is evidence: a stamp
+    the calendars hold but Bitcoin does not yet reports no block, an upgraded
+    stamp reports its height, and the tag appearing by chance inside a merkle
+    root is refused because its declared payload length does not fit a height.
+    """
+    report = tmp_path / "eval_report.md"
+    report.write_bytes(b"# Evaluation report\n")
+    head = (dashboard.OTS_MAGIC + bytes([1, dashboard.OTS_SHA256])
+            + hashlib.sha256(report.read_bytes()).digest())
+    proof = tmp_path / "eval_report.md.ots"
+    monkeypatch.setattr(dashboard, "ROOT", tmp_path)
+
+    proof.write_bytes(head + b"\x00pending")
+    assert dashboard.ots_proof()["blocks"] == []
+
+    proof.write_bytes(head + dashboard.OTS_BITCOIN_TAG + bytes([1, 5]))
+    assert dashboard.ots_proof()["blocks"] == [5]
+
+    proof.write_bytes(head + dashboard.OTS_BITCOIN_TAG + bytes([4, 5, 0, 0, 0]))
+    assert dashboard.ots_proof()["blocks"] == []

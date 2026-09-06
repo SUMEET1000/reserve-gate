@@ -302,6 +302,12 @@ export function Meter({ block: b }) {
         <div><dt>Ends</dt>
           <dd>{(b.expires_at || '').slice(0, 10)}</dd></div>
       </dl>
+      <p className="meter__note note">
+        Allowing a purchase — or approving one that asked — <b>reserves</b> the money: an
+        order exists, and nobody has been paid. It moves to <b>Spent</b> only when the
+        payment settles, which on this page is the <b>Valid webhook</b> button below.
+        Reserved money that is never paid returns to the budget on its own.
+      </p>
       {(b.revoked || b.frozen) && (
         <p className="meter__stop">
           {b.revoked ? 'You cancelled this budget. Nothing more can be spent.'

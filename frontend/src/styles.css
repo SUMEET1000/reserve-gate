@@ -2405,6 +2405,10 @@ code,
   font-variant-numeric: tabular-nums;
 }
 
+.meter__note {
+  margin-top: 1rem;
+}
+
 .meter__stop {
   margin-top: 0.9rem;
   font-weight: 700;

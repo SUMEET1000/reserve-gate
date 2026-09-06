@@ -518,6 +518,32 @@ def test_changing_one_limit_leaves_the_other_two_alone(c):
     assert (after["limits"]["reserved"], after["limits"]["max_txn"]) == (200000, 50000), after
 
 
+def test_settling_pays_the_purchase_that_was_just_allowed(c, app):
+    """The verdict's own "Pay and settle this one" button relies on this.
+
+    /api/webhook-replay settles the newest held reservation carrying an order
+    id, and only an ALLOW is ever given one, so a HOLD taken afterwards cannot
+    be settled in its place. If that stops being true the button silently pays
+    the wrong purchase.
+    """
+    allowed = c.post("/api/attack", json={"amount": 30000, "receipt": "settle me"}).json()
+    assert allowed["decision"]["outcome"] == "ALLOW", allowed
+    held = c.post("/api/attack", json={"amount": 250000, "receipt": "asks first"}).json()
+    assert held["decision"]["outcome"] == "HOLD", held
+    assert (allowed["block"]["spent"], held["block"]["held"]) == (0, 280000), held
+
+    settled = c.post("/api/webhook-replay", json={"variant": "apply"}).json()
+    assert settled["effect"] == "APPLY", settled
+    # The allowed 30000 became spent; the held 250000 is untouched.
+    assert (settled["block"]["spent"], settled["block"]["held"]) == (30000, 250000), settled
+
+    # The control: with nothing held that carries an order, settling refuses
+    # rather than inventing one, so the assertion above is not passing because
+    # the route settles whatever it likes.
+    fresh = other(app).post("/api/webhook-replay", json={"variant": "apply"})
+    assert fresh.status_code == 409, fresh.text
+
+
 def test_a_revoked_block_refuses_the_next_call_instantly(c):
     c.post("/api/revoke", json={})
     assert c.post("/api/attack", json={"amount": 50000}).json()["decision"]["rule"] == "R4"

@@ -167,6 +167,28 @@ export default function Attack() {
     }
   }
 
+  // Settle the purchase whose verdict is on screen. It sends the same signed
+  // event the webhook shelf below sends - nothing is faked and no shortcut is
+  // taken - and `/api/webhook-replay` settles the newest held order carrying an
+  // order id, which is exactly this one: only an ALLOW is given an order, so a
+  // later HOLD cannot be picked up instead. The button exists because the money
+  // moving from Reserved to Spent needs a payment, and nothing on this page
+  // told a visitor where to make one happen.
+  async function settle() {
+    setOut(o => ({ ...o, settling: true }));
+    try {
+      const r = await api('/api/webhook-replay', { variant: 'apply' });
+      setBlock(r.block);
+      setWebhooks(w => [{ ...r, variant: 'apply', id: Date.now() }, ...w].slice(0, 8));
+      setOut(o => ({ ...o, settling: false,
+                     settled: r.applied ? 'Paid and settled. It is Spent now, not Reserved.'
+                                        : `Not settled — ${r.reason || r.effect}` ,
+                     settleFailed: !r.applied }));
+    } catch (e) {
+      setOut(o => ({ ...o, settling: false, settled: e.message, settleFailed: true }));
+    }
+  }
+
   async function replay(variant) {
     setWhBusy(variant);
     try {
@@ -292,6 +314,21 @@ export default function Attack() {
                       </span>
                     : <Button onClick={() => approve(out.decision.call_id)} disabled={out.approving}>
                         Approve it
+                      </Button>}
+                </div>
+              )}
+              {out.decision.outcome === 'ALLOW' && !out.decision.detail?.replay && (
+                <div className="mt-3">
+                  <Note className="mb-2">
+                    The money is <b>reserved</b>, not spent — an order exists and nobody has paid
+                    yet. Settle it to see it move.
+                  </Note>
+                  {out.settled
+                    ? <span className={out.settleFailed ? 'said is-error' : 'said is-ok'}>
+                        {out.settled}
+                      </span>
+                    : <Button onClick={settle} disabled={out.settling}>
+                        {out.settling ? 'Settling…' : 'Pay and settle this one'}
                       </Button>}
                 </div>
               )}

@@ -21,9 +21,16 @@ export async function api(path, body, { timeoutMs = 10000 } = {}) {
     if (!r.ok) throw new Error('the server answered ' + r.status);
     return data;
   } catch (err) {
+    // A caller that commits money has to tell a refusal the server sent from a
+    // reply that never arrived: the second may have succeeded, so it is the one
+    // worth asking again. fetch() rejects with a TypeError when the request or
+    // its response is lost, and an abort means the answer is simply unknown.
     if (err.name === 'AbortError') {
-      throw new Error('request timed out after ' + Math.round(timeoutMs / 1000) + 's');
+      const timedOut = new Error('request timed out after ' + Math.round(timeoutMs / 1000) + 's');
+      timedOut.noReply = true;
+      throw timedOut;
     }
+    if (err instanceof TypeError) err.noReply = true;
     throw err;
   } finally {
     clearTimeout(timer);

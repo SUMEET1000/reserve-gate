@@ -95,7 +95,8 @@ CREATE TABLE IF NOT EXISTS live_checkout_slots (
   attempted_at TEXT NOT NULL,
   status      TEXT NOT NULL CHECK (status IN
                 ('pending', 'created', 'capturing', 'captured', 'failed')),
-  order_id    TEXT
+  order_id    TEXT,
+  payment_id  TEXT
 );
 CREATE INDEX IF NOT EXISTS live_checkout_slots_day ON live_checkout_slots(day);
 """
@@ -107,6 +108,8 @@ MIGRATIONS = (
      "ALTER TABLE blocks ADD COLUMN freeze_reason TEXT"),
     ("payment_id", "PRAGMA table_info(reservations)",
      "ALTER TABLE reservations ADD COLUMN payment_id TEXT"),
+    ("payment_id", "PRAGMA table_info(live_checkout_slots)",
+     "ALTER TABLE live_checkout_slots ADD COLUMN payment_id TEXT"),
     ("outcome_unknown", "PRAGMA table_info(reservations)",
      "ALTER TABLE reservations ADD COLUMN outcome_unknown INTEGER NOT NULL DEFAULT 0"),
     ("reservation_id", "PRAGMA table_info(idempotency)",
@@ -227,7 +230,8 @@ def connect(db: str | None = None) -> sqlite3.Connection:
               attempted_at TEXT NOT NULL,
               status TEXT NOT NULL CHECK (status IN
                     ('pending', 'created', 'capturing', 'captured', 'failed')),
-              order_id TEXT
+              order_id TEXT,
+              payment_id TEXT
             );
             INSERT INTO live_checkout_slots
               SELECT * FROM live_checkout_slots_single;

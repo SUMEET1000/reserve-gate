@@ -486,6 +486,26 @@ async def api_live_capture(request):
     finally:
         conn.close()
     if not row:
+        # A reply that never arrived is not a payment that never happened. The
+        # capture commits before the response is written, so a dropped
+        # connection left the page reporting an error over a real sale and the
+        # retry answered "no live order ready" - which reads as the money never
+        # having moved. The slot remembers which payment it committed, so the
+        # retry gets the first answer back instead: the R7 replay rule every
+        # other money route already follows. Nothing is re-executed here.
+        conn = ledger.connect()
+        try:
+            done = conn.execute(
+                "SELECT caller_id FROM live_checkout_slots WHERE visitor_id = ?"
+                " AND status = 'captured' AND payment_id = ?",
+                (visitor, payment_id)).fetchone()
+            block = block_json(conn, done["caller_id"]) if done else None
+        finally:
+            conn.close()
+        if done:
+            return live_reply({"captured": True, "payment_id": payment_id,
+                               "block": block, "replay": True},
+                              token, demo_token, request)
         return live_reply({"error": "No live order from this browser is ready to capture"},
                           token, demo_token, request, 404)
     try:
@@ -496,8 +516,8 @@ async def api_live_capture(request):
                            "recorded_proof": True}, token, demo_token, request, 502)
     conn = ledger.connect()
     try:
-        conn.execute("UPDATE live_checkout_slots SET status = 'captured' WHERE id = ?",
-                     (row["id"],))
+        conn.execute("UPDATE live_checkout_slots SET status = 'captured', payment_id = ?"
+                     " WHERE id = ?", (payment_id, row["id"]))
         block = block_json(conn, row["caller_id"])
     finally:
         conn.close()

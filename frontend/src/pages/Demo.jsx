@@ -360,9 +360,20 @@ export default function Demo() {
         description: order.display_item,
         handler: async response => {
           setLiveState({ text: 'Test payment accepted. Taking the ₹100 through the gate…' });
+          const capture = () => api('/api/live-checkout/capture',
+                                    { payment_id: response.razorpay_payment_id });
           try {
-            const done = await api('/api/live-checkout/capture',
-                                   { payment_id: response.razorpay_payment_id });
+            let done;
+            try {
+              done = await capture();
+            } catch (lost) {
+              // The capture commits before its reply is written, so a dropped
+              // connection here left a real sale reported as "Failed to fetch".
+              // Ask again - the server answers a retry of a captured payment
+              // with its first result - and let a refusal it did send stand.
+              if (!lost.noReply) throw lost;
+              done = await capture();
+            }
             setLiveState({
               text: done.captured
                 ? 'Done. The test payment was captured and ₹100 came off your demo balance.'

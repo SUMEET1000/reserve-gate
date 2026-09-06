@@ -1251,3 +1251,41 @@ def test_the_panel_reads_the_bitcoin_block_out_of_the_proof(tmp_path, monkeypatc
 
     proof.write_bytes(head + dashboard.OTS_BITCOIN_TAG + bytes([4, 5, 0, 0, 0]))
     assert dashboard.ots_proof()["blocks"] == []
+
+
+def test_a_lost_capture_reply_is_answered_by_a_retry_not_a_404(c, monkeypatch):
+    """The reply went missing, so the page said "Failed to fetch" over a real sale.
+
+    The capture had already committed: the block showed the 100 spent while the
+    page showed an error, and retrying the same payment was answered "no live
+    order ready to capture". A reply that never arrived is not a payment that
+    never happened, so the slot remembers which payment it committed and hands
+    a retry the first answer back - the R7 replay rule every other money route
+    already follows.
+    """
+    _test_key(monkeypatch)
+
+    async def fake(tool, args):
+        if tool == "create_order":
+            return {"id": "order_public123", "amount": 10000, "currency": "INR"}
+        if tool == "fetch_payment":
+            return {"id": args["payment_id"], "order_id": "order_public123",
+                    "amount": 10000, "currency": "INR"}
+        return {"id": "pay_public123", "status": "captured",
+                "amount": 10000, "currency": "INR"}
+
+    monkeypatch.setattr(server, "call_razorpay", fake)
+    assert c.post("/api/live-checkout/order", json={}).status_code == 200
+    first = c.post("/api/live-checkout/capture", json={"payment_id": "pay_public123"})
+    assert first.status_code == 200 and first.json()["block"]["spent"] == 10000
+
+    again = c.post("/api/live-checkout/capture", json={"payment_id": "pay_public123"})
+    assert again.status_code == 200, again.text
+    assert again.json()["captured"] is True and again.json()["replay"] is True
+    # The money moved once. A replay hands back an answer; it never re-executes.
+    assert again.json()["block"]["spent"] == 10000
+
+    # The control: a payment this browser never captured is still refused, so
+    # the replay is keyed on the payment and not on "any id from this visitor".
+    other = c.post("/api/live-checkout/capture", json={"payment_id": "pay_neverseen1"})
+    assert other.status_code == 404, other.text

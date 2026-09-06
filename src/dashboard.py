@@ -40,7 +40,7 @@ from datetime import datetime, timedelta, timezone
 from starlette.responses import JSONResponse, PlainTextResponse, Response
 
 from . import audit, ledger, webhook
-from .policy import ALLOW, HOLD, Call, Config, PolicyRefusal, State, decide, load_config
+from .policy import ALLOW, HOLD, Call, Config, PolicyRefusal, decide, load_config
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
@@ -51,6 +51,9 @@ LIVE_COOKIE = "rg_live"
 # guarantees a demo block can never be the agent's, whose token is a credential.
 SESSION_NS = "demo-session-"
 SESSION_TOKEN = re.compile(r"\A[A-Za-z0-9_-]{16,64}\Z")
+# Razorpay's own id shape for a payment. Checked before the checkout slot moves,
+# so a caller cannot spend another visitor's pending payment on a typo.
+PAYMENT_ID = re.compile(r"\Apay_[A-Za-z0-9]{6,32}\Z")
 
 # Static files, by exact name. There is no caller-supplied path anywhere in this
 # module, so directory traversal is not defended against - it is absent.
@@ -336,8 +339,13 @@ def config_of(token: str) -> Config:
 
 def reply(payload, token: str, request, status: int = 200) -> Response:
     r = JSONResponse(payload, status)
-    r.set_cookie(COOKIE, token, max_age=86400, path="/", httponly=True,
-                 samesite="lax", secure=request.url.scheme == "https")
+    # Only when it is not the token the request already carried. Re-sending it
+    # every time meant a read still in flight when the visitor pressed Start
+    # over finished afterwards and put its own cookie back, so the reset was
+    # silently undone and the old block returned with its old limits.
+    if request.cookies.get(COOKIE) != token:
+        r.set_cookie(COOKIE, token, max_age=86400, path="/", httponly=True,
+                     samesite="lax", secure=request.url.scheme == "https")
     return r
 
 
@@ -352,8 +360,11 @@ def live_visitor(token: str) -> str:
 
 def live_reply(payload, token: str, demo_token: str, request, status: int = 200) -> Response:
     r = reply(payload, demo_token, request, status)
-    r.set_cookie(LIVE_COOKIE, token, max_age=86400, path="/", httponly=True,
-                 samesite="lax", secure=request.url.scheme == "https")
+    # Same rule as the demo cookie above: a late response must not reinstate the
+    # identity it was sent with.
+    if request.cookies.get(LIVE_COOKIE) != token:
+        r.set_cookie(LIVE_COOKIE, token, max_age=86400, path="/", httponly=True,
+                     samesite="lax", secure=request.url.scheme == "https")
     return r
 
 
@@ -448,7 +459,14 @@ async def api_live_order(request):
 async def api_live_capture(request):
     token, demo_token = live_token(request), session_token(request)
     body = await body_of(request)
-    if set(body) != {"payment_id"} or not isinstance(body.get("payment_id"), str):
+    # The shape is judged before the slot is touched, and an empty string is not
+    # a payment id. `isinstance(str)` alone accepted "", which reached the
+    # capture, failed there, and left the slot marked `capturing` - so the real
+    # Checkout callback arriving a moment later found nothing `created` and was
+    # answered "no live order ready to capture" while the 100 stayed held. One
+    # malformed request killed a payment that was already in flight.
+    payment_id = body.get("payment_id")
+    if set(body) != {"payment_id"} or not isinstance(payment_id, str)             or not PAYMENT_ID.match(payment_id):
         return live_reply({"error": "Send only the payment_id returned by Checkout"},
                           token, demo_token, request, 400)
     visitor = live_visitor(token)
@@ -472,7 +490,7 @@ async def api_live_capture(request):
                           token, demo_token, request, 404)
     try:
         result = await _LIVE_CAPTURE(row["caller_id"], config_of(demo_token),
-                                     body["payment_id"], row["order_id"])
+                                     payment_id, row["order_id"])
     except Exception:
         return live_reply({"error": "The payment could not be safely captured",
                            "recorded_proof": True}, token, demo_token, request, 502)
@@ -785,6 +803,14 @@ async def api_twin(request):
     without. The decisions are identical because the two `policy.Call` objects
     are identical: `Call` has no field a product name could occupy. decide() is
     pure (G5), so neither run writes anything at all.
+
+    Both runs are decided against the state the audit log's own call was decided
+    against, not against a bare `State(block=...)`. A record the log refused
+    under G16 for a reused key came back HOLD here, because the idempotency row
+    carrying the conflict was never read - so the page showed a BLOCK from the
+    log above two HOLDs, which is the page contradicting itself. Reproducing the
+    state is also the stronger claim: the text changes nothing even to a verdict
+    that turned on the ledger rather than on the money.
     """
     token = session_token(request)
     body = await body_of(request)
@@ -794,21 +820,33 @@ async def api_twin(request):
     # refuses - silently judged an ordinary order instead, and the panel
     # answered ALLOW under a verdict that said BLOCK.
     tool = body.get("tool") if isinstance(body.get("tool"), str) else "create_order"
+
+    def as_str(name):
+        return body.get(name) if isinstance(body.get(name), str) else None
+
+    # The rest of the logged call's money identity. `idem_key` and `order_id`
+    # are what R7, G16 and R3 turn on, and `receipt` is not judged - it only
+    # rebuilds the digest the key was bound to, in the shape /api/attack binds
+    # it, so a genuine replay reads as a replay instead of a false conflict.
+    idem_key, order_id, receipt = as_str("idem_key"), as_str("order_id"), as_str("receipt")
+    amount, currency = body.get("amount", 150000), body.get("currency", "INR")
     cfg, caller = config_of(token), caller_of(token)
+    probe = Call(tool=tool[:60], caller_id=caller, amount=amount, currency=currency,
+                 order_id=order_id, idem_key=idem_key)
     conn = ledger.connect()
     try:
         ledger.init(conn, cfg, caller_id=caller)
-        block = ledger.snapshot(conn, caller)
+        state = ledger.state_for(conn, probe, cfg,
+                                 idempotency_args={"amount": amount, "receipt": receipt})
     finally:
         conn.close()
 
     def run(free_text: str) -> dict:
         # `free_text` would ride on the wire as the receipt and the notes. There
         # is nowhere on Call to put it, which is the entire demonstration.
-        call = Call(tool=tool[:60], caller_id=caller,
-                    amount=body.get("amount", 150000),
-                    currency=body.get("currency", "INR"))
-        d = decide(call, State(block=block), cfg, ledger.now_utc())
+        call = Call(tool=tool[:60], caller_id=caller, amount=amount, currency=currency,
+                    order_id=order_id, idem_key=idem_key)
+        d = decide(call, state, cfg, ledger.now_utc())
         return {"free_text": free_text,
                 "call": json.dumps(dataclasses.asdict(call), sort_keys=True, default=str),
                 "decision": decision_json(d)}

@@ -323,6 +323,39 @@ def sweep_expired(conn: sqlite3.Connection, now: datetime | None = None) -> None
         raise
 
 
+def idem_key_for(call: Call) -> str:
+    """The key this call is remembered under: the client's when it sent one, a
+    digest of its money identity when it did not (R7, E13)."""
+    return call.idem_key or args_hash(call)
+
+
+def _velocity_count(conn: sqlite3.Connection, caller_id: str, config: Config,
+                    now: datetime) -> int:
+    window = iso(now - timedelta(minutes=config.velocity_window_minutes))
+    return conn.execute("SELECT COUNT(*) c FROM money_calls WHERE caller_id = ? AND ts > ?",
+                        (caller_id, window)).fetchone()["c"]
+
+
+def state_for(conn: sqlite3.Connection, call: Call, config: Config, *,
+              now: datetime | None = None,
+              idempotency_args: dict | None = None) -> State:
+    """The State this call would be decided against, without deciding it.
+
+    Read-only, and deliberately so: no write lock, no expiry sweep, no velocity
+    row, nothing reserved. `/api/twin` re-judges a decision the audit log
+    already holds, and a decision re-taken against a bare `State(block=...)` is
+    not that decision - a call the log refused under G16 for a reused key came
+    back HOLD, because the idempotency row carrying the conflict was never read.
+
+    It assembles the state through the same three pieces `authorize` uses, so
+    the two cannot answer differently about the same call.
+    """
+    now = now or now_utc()
+    return _load_state(conn, call, idem_key_for(call), now,
+                       _velocity_count(conn, call.caller_id, config, now),
+                       args_hash(call, idempotency_args))
+
+
 def _load_state(conn: sqlite3.Connection, call: Call, key: str, now: datetime,
                 velocity: int, bound_hash: str) -> State:
     block = snapshot(conn, call.caller_id)
@@ -391,7 +424,7 @@ def authorize(conn: sqlite3.Connection, call: Call, config: Config, *,
         # stored permanently with a hash that ignores the arguments and a
         # changed amount minted a second key instead of conflicting (G16).
         client_key = call.idem_key or None
-        key = client_key or args_hash(call)
+        key = idem_key_for(call)
         # The key stays money-only when it is derived, so a retry that rewords
         # its receipt still collides and cannot mint a second real order (E13).
         # What it is *bound* to is the full payload either way: binding only the
@@ -402,11 +435,9 @@ def authorize(conn: sqlite3.Connection, call: Call, config: Config, *,
         bound_hash = args_hash(call, idempotency_args)
         derived = client_key is None
         _expire_stale(conn, now)
-        window = iso(now - timedelta(minutes=config.velocity_window_minutes))
         # B13. The velocity check and the row that increments it share this
         # transaction; two statements outside one is the bypass.
-        count = conn.execute("SELECT COUNT(*) c FROM money_calls WHERE caller_id = ? AND ts > ?",
-                             (call.caller_id, window)).fetchone()["c"]
+        count = _velocity_count(conn, call.caller_id, config, now)
         state = _load_state(conn, call, key, now, count, bound_hash)
 
         d = decide(call, state, config, now)

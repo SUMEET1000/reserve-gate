@@ -564,6 +564,45 @@ def test_the_twin_judges_the_call_it_was_given(c, body, outcome, rule):
         assert (got["outcome"], got["rule"]) == (outcome, rule), (side, got)
 
 
+@pytest.mark.parametrize("bad", ["", "pay_", "x", "order_abc", "pay_!!!!!!"])
+def test_a_malformed_payment_id_never_touches_the_checkout_slot(c, bad):
+    """It reached the capture and burned the slot on the way through.
+
+    `isinstance(str)` accepted "", the slot was already flipped to `capturing`
+    by then, and the real Checkout callback arriving a moment later found
+    nothing `created` - so a legitimate payment was answered "no live order
+    ready to capture" while the money stayed held.
+    """
+    r = c.post("/api/live-checkout/capture", json={"payment_id": bad})
+    assert r.status_code == 400, (bad, r.status_code, r.text)
+    # The control: a well-shaped id gets past the shape check and is refused for
+    # the real reason - this browser has no order - not for its spelling.
+    ok = c.post("/api/live-checkout/capture", json={"payment_id": "pay_public123"})
+    assert ok.status_code == 404, ok.text
+
+
+def test_a_second_read_does_not_put_the_old_session_cookie_back(c):
+    """Every response re-sent the cookie, so a read still in flight when the
+    visitor pressed Start over finished afterwards and reinstated its own
+    token - the reset silently undone and the old block returned."""
+    c.post("/api/attack", json={"amount": 10000})
+    before = c.get("/api/session").json()["block"]["held"]
+    assert before == 10000, before
+
+    old_cookie = c.cookies.get("rg_demo")
+    fresh = c.post("/api/session/reset", json={})
+    assert fresh.json()["block"]["held"] == 0, fresh.text
+    assert c.cookies.get("rg_demo") != old_cookie
+
+    # The late response: the same read, replayed with the pre-reset cookie. It
+    # must answer about the old block without handing that identity back.
+    late = c.get("/api/session", headers={"Cookie": f"rg_demo={old_cookie}"})
+    assert late.json()["block"]["held"] == 10000, late.text
+    assert "set-cookie" not in {k.lower() for k in late.headers}, dict(late.headers)
+    # The reset still stands.
+    assert c.get("/api/session").json()["block"]["held"] == 0
+
+
 def test_a_revoked_block_refuses_the_next_call_instantly(c):
     c.post("/api/revoke", json={})
     assert c.post("/api/attack", json={"amount": 50000}).json()["decision"]["rule"] == "R4"

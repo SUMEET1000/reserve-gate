@@ -3956,6 +3956,17 @@ code,
   line-height: 1.6;
 }
 
+/* The purchase the twin borrowed. Deliberately not a `.verdict-row`: it carries
+   the money identity and no verdict, so it cannot be read as a third answer
+   competing with the two below it. */
+.twin-from {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+}
+
 .twin-grid {
   display: grid;
   gap: 1.6rem;

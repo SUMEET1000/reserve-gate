@@ -86,19 +86,15 @@ function rupeesToPaise(raw) {
   return typeof amount === 'number' && Number.isFinite(amount) ? amount * 100 : amount;
 }
 
-// One audit record drawn the way every other decision on this site is drawn.
-// The twin panel and the log at the foot of the page read the same record from
-// the same feed, so a disagreement between them would be a disagreement in the
-// record and not in two copies of the drawing.
-const auditDecision = r => ({
-  outcome: (r.event || '').toUpperCase(),
-  rule: r.rule,
-  reason: r.reason || r.event,
-  detail: r.detail,
-});
-
+// What one audit record bought, for how much. Used by the twin panel to name
+// the purchase it borrowed, and by the log at the foot to title each row.
 const auditTitle = r => [r.receipt, r.amount != null ? money(r.amount, r.currency) : null]
   .filter(Boolean).join(' · ');
+
+// The purchase the twin re-ran, named without a verdict of its own: the two
+// sides below it carry the verdict, and it is now the log's verdict, so a third
+// copy of it here would be the same answer printed twice.
+const auditIdentity = r => [auditTitle(r), r.tool, r.currency].filter(Boolean).join(' · ');
 
 function Field({ id, label, hint, value, onChange, className = '', ...rest }) {
   const inputId = id || `field-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
@@ -182,7 +178,15 @@ export default function Attack() {
       setBlock(r.block);
       setOut(o => ({ ...o, approved: 'Approved. The purchase went through.' }));
     } catch (e) {
-      setOut(o => ({ ...o, approved: e.message, approveFailed: true }));
+      // A request that never arrived has not decided anything, so the hold is
+      // still there and still approvable. Writing the error into `approved`
+      // retired the button and left `approving` true, so one dropped request
+      // took away the only way to release money the page still showed as held.
+      // Only an answer saying the hold is gone retires it.
+      const gone = /(404|410)|expired|no such|not found|already/i.test(e.message);
+      setOut(o => (gone
+        ? { ...o, approving: false, approved: e.message, approveFailed: true }
+        : { ...o, approving: false, approveError: e.message }));
     }
   }
 
@@ -196,11 +200,19 @@ export default function Attack() {
     setTwinBusy(true);
     const from = lastAudit;
     try {
+      // The whole logged call, not just its money. `idem_key` and `order_id`
+      // are what R7, G16 and R3 turn on, so a record the log refused for a
+      // reused key came back HOLD without them - a BLOCK quoted from the log
+      // above two HOLDs. `receipt` is never judged; it only lets the server
+      // rebuild the digest that key was bound to.
       const r = await api('/api/twin', {
         text: payload,
         tool: from ? from.tool : (call.tool || 'create_order'),
         amount: from ? from.amount : (rupeesToPaise(call.amount) ?? 150000),
         currency: from ? from.currency : call.currency,
+        receipt: from ? from.receipt : call.receipt,
+        idem_key: from ? from.detail?.idem_key : (call.key || undefined),
+        order_id: from ? from.detail?.order_id : undefined,
       });
       setTwin({ ...r, from });
     } catch (e) {
@@ -364,9 +376,13 @@ export default function Attack() {
                     ? <span className={out.approveFailed ? 'said is-error' : 'said is-ok'}>
                         {out.approved}
                       </span>
-                    : <Button onClick={() => approve(out.decision.call_id)} disabled={out.approving}>
-                        Approve it
-                      </Button>}
+                    : <>
+                        <Button onClick={() => approve(out.decision.call_id)}
+                                disabled={out.approving}>
+                          {out.approving ? 'Approving…' : 'Approve it'}
+                        </Button>
+                        {out.approveError && <ErrorLine>{out.approveError}</ErrorLine>}
+                      </>}
                 </div>
               )}
               {out.decision.outcome === 'ALLOW' && !out.decision.detail?.replay && (
@@ -421,18 +437,20 @@ export default function Attack() {
       <Panel
         title="Try to talk it into saying yes"
         intro="Hide an instruction inside the product name. The last purchase in your audit
-               log is then judged twice: once carrying your text, once with it removed. If
-               both answers match, the gate never read a word of it."
+               log is then judged twice over: once carrying your text, once with it removed.
+               If both answers match, the gate never read a word of it."
       >
-        {lastAudit
-          ? <Note className="mb-4">
-              It will judge <b>{auditTitle(lastAudit) || lastAudit.tool}</b> — the last money
-              decision in your log, shown at the foot of this page.
-            </Note>
-          : <Note className="mb-4">
-              Your log is empty, so it will judge the request written in the form above. Send a
-              purchase first and this judges that one instead.
-            </Note>}
+        {/* The purchase is named once, under the button, by `.twin-from` - which reports
+            what the request actually used rather than what is newest now. Naming it here
+            too was the same thing said twice, and on a phone it made a seven-line wall
+            above the control. */}
+        <Note className="mb-4">
+          {lastAudit
+            ? <>It re-runs your last purchase against the budget exactly as it stands, so both
+                answers come back with the verdict and the rule your log already shows.</>
+            : <>Your log is empty, so it will judge the request written in the form above.
+                Send a purchase first and this uses that one instead.</>}
+        </Note>
         <div className="field is-wide">
           <label htmlFor="hidden-instruction" className="field__label">Your hidden instruction</label>
           <textarea id="hidden-instruction" rows={2} value={payload} onChange={e => setPayload(e.target.value)} />
@@ -445,8 +463,8 @@ export default function Attack() {
           <div className="mt-6">
             {twin.from && (
               <div className="mb-6">
-                <Marginal>The audit record it judged</Marginal>
-                <Verdict decision={auditDecision(twin.from)} title={auditTitle(twin.from)} />
+                <Marginal>The purchase it re-ran, from your log</Marginal>
+                <p className="twin-from">{auditIdentity(twin.from)}</p>
               </div>
             )}
             <p className="twin-said">
@@ -531,8 +549,7 @@ export default function Attack() {
                 reason: r.reason || r.event,
                 detail: r.detail,
               }}
-              title={[r.receipt, r.amount != null ? money(r.amount, r.currency) : null]
-                .filter(Boolean).join(' · ')}
+              title={auditTitle(r)}
             />
           ))}
         </div>

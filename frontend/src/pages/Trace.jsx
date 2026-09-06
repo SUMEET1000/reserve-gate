@@ -57,8 +57,7 @@ export default function Trace() {
 
   function pick(id) {
     setOrder(id);
-    const reduce = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    chainRef.current?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'nearest' });
+    chainRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
   const settled = list.data?.purchases.filter(p => p.settled).length;

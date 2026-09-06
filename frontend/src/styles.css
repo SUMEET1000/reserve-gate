@@ -154,7 +154,7 @@
    with the band filling the screen. Mandatory would trap every scroll on the
    page; proximity only acts when the scroll already stopped nearby, and does
    nothing at all for a reader who keeps going. */
-@media (min-width: 900px) and (prefers-reduced-motion: no-preference) {
+@media (min-width: 900px) {
   html {
     scroll-snap-type: y proximity;
   }
@@ -240,21 +240,7 @@
     outline-offset: 2px;
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    html {
-      scroll-behavior: auto;
-    }
 
-    *,
-    *::before,
-    *::after {
-      animation: none !important;
-      animation-duration: 0.01ms !important;
-      animation-iteration-count: 1 !important;
-      transition: none !important;
-      transition-duration: 0.01ms !important;
-    }
-  }
 }
 
 @layer components {
@@ -373,13 +359,7 @@
   transform: none;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .js-reveal .reveal {
-    opacity: 1;
-    transform: none;
-    transition: none;
-  }
-}
+
 
 button,
 a[class*="border"] {
@@ -511,15 +491,7 @@ code,
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
 
-  .stagger>*,
-  .spine::before {
-    animation: none;
-    opacity: 1;
-    transform: none;
-  }
-}
 
 @view-transition {
   navigation: auto;
@@ -549,14 +521,7 @@ code,
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
 
-  ::view-transition-group(root),
-  ::view-transition-old(root),
-  ::view-transition-new(root) {
-    animation: none !important;
-  }
-}
 
 /* ---------------------------------------------------------------- the sheet
 
@@ -2072,11 +2037,7 @@ code,
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .pending {
-    animation: none;
-  }
-}
+
 
 /* --- one decision, stamped on the sheet. The mark is the same gate outline
    the landing page draws its three verdicts with, so form carries the
@@ -2131,6 +2092,11 @@ code,
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* The three verdicts are short, but the log also carries event names as tags,
+     and COLD_START_LEDGER_RESET is one unbreakable 23-character token: at 320px
+     it drew 23px past the panel and read as COLD_START_LEDGER_RES. */
+  min-width: 0;
+  overflow-wrap: anywhere;
   padding: 2px 7px;
   border-radius: 2px;
   font-family: var(--font-mono);
@@ -2253,17 +2219,7 @@ code,
   transition: width 350ms var(--ease-refract);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .meter__bar>span {
-    transition: none;
-  }
 
-  .meter__bar .is-free::after,
-  .meter__bar .is-held,
-  .meter__bar .is-spent {
-    animation: none !important;
-  }
-}
 
 .swatch {
   display: inline-block;
@@ -2692,6 +2648,49 @@ code,
 .count-list dd {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+}
+
+/* The same list, each row carrying the sentence that makes its number readable.
+   Two columns of explained rows put a paragraph in a 40ch cell, so this variant
+   is one column and gives the labels back their line. */
+.count-list.is-explained {
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
+.count-list.is-explained>div {
+  align-items: baseline;
+  padding: 0.85rem 0;
+  font-size: 0.86rem;
+}
+
+.count-list.is-explained dt {
+  color: var(--color-ink);
+}
+
+.count-list.is-explained dt span {
+  display: block;
+  margin-top: 0.3rem;
+  max-width: 62ch;
+  font-family: var(--font-sans);
+  font-size: 0.92rem;
+  line-height: 1.55;
+  color: var(--color-muted);
+}
+
+.count-list.is-explained dd {
+  font-size: 1.15rem;
+}
+
+/* A number that had to be zero and is not. Form as well as colour: the row is
+   the one thing on the sheet a reader must not skim past. */
+.count-list.is-explained>div.is-bad {
+  padding-left: 0.8rem;
+  border-left: 2px solid var(--color-block);
+}
+
+.count-list.is-explained>div.is-bad dd {
+  color: var(--color-block);
 }
 
 /* --- a shelf of things to try. Not a form: every item is one click, and the
@@ -4717,13 +4716,7 @@ pre {
   }
 }
 
-/* A caret that stops blinking is still a caret; one that disappears reads as a
-   rendering fault, so reduced motion holds it on rather than removing it. */
-@media (prefers-reduced-motion: reduce) {
-  .code__line:last-child .code__text::after {
-    animation: none;
-  }
-}
+
 
 .t-cmd {
   color: var(--code-cmd);
@@ -4931,17 +4924,7 @@ body[data-page="landing"][data-skin="night"].js-reveal .reveal.is-in>*:nth-child
   }
 }
 
-/* The stagger is decoration on top of a reveal that has already happened, so it
-   comes off whole rather than being shortened. */
-@media (prefers-reduced-motion: reduce) {
-  [data-skin="night"].js-reveal .reveal {
-    transform: none;
-  }
 
-  [data-skin="night"].js-reveal .reveal.is-in>* {
-    animation: none;
-  }
-}
 
 /* The roll. Measured on landonorris.com's clone 2 Sept 2026 (Playwright,
    1440x900): a control's label is split into inline-block spans inside a box
@@ -5030,18 +5013,7 @@ body[data-page="landing"][data-skin="night"].js-reveal .reveal.is-in>*:nth-child
     transform: translateY(-100%);
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .roll__c {
-      transition: none;
-    }
 
-    a:hover .roll__c,
-    button:hover .roll__c,
-    a:focus-visible .roll__c,
-    button:focus-visible .roll__c {
-      transform: none;
-    }
-  }
 }
 
 /* ---------------------------------------------------------------------------
@@ -5354,12 +5326,4 @@ body[data-page="landing"][data-skin="night"].js-reveal .reveal.is-in>*:nth-child
 
 
 
-@media (prefers-reduced-motion: reduce) {
-  .trans-content {
-    transition: none !important;
-    animation: none !important;
-  }
-  .trans-overlay {
-    display: none !important;
-  }
-}
+

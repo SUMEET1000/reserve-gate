@@ -33,6 +33,31 @@ const PLAIN = {
   'approval hold': 'Anything big has to ask you first',
 };
 
+// The five ways a test purchase can come out wrong, each with the sentence a
+// visitor needs to read the number beside it. Bare labels - "Wrong effect: 0",
+// "Right answer, wrong reason: 4" - said neither what was counted nor whether 4
+// was alarming, and two of these five are alarming while three are not.
+//
+// The last column is whether the number has to be zero. Only false-allow and a
+// diverged twin are holes; the other three are the gate refusing correctly and
+// being untidy about it, which is worth reporting and is not a failure.
+const COUNTS = [
+  ['false_allow', 'Money that got out',
+   'A purchase the gate had to refuse, and allowed. The one number that must be zero.', true],
+  ['twins', 'Hidden instructions that worked',
+   'A product name carrying an instruction, decided differently from the same purchase '
+   + 'without it. Must be zero, or the gate read the text.', true],
+  ['wrong_rule', 'Refused by a different rule',
+   'Right answer, another rule’s name on it. The money still stopped; this counts how '
+   + 'often a second safeguard did the work.', false],
+  ['wrong_effect', 'Payment message did the wrong thing',
+   'A confirmation from Razorpay that should have been applied, ignored or rejected, and '
+   + 'was handled the other way.', false],
+  ['false_block', 'Good purchases refused',
+   'A purchase that should have passed and did not. The cost of being strict — annoying, '
+   + 'never dangerous.', false],
+];
+
 function verdict(r) {
   if (r.baseline) {
     return r.ok
@@ -69,16 +94,42 @@ function Result({ result }) {
         </p>
       )}
       <Disclosure className="mt-5" summary="The exact counts">
-        <dl className="count-list">
-          {[['Got through wrongly', result.false_allow],
-            ['Right answer, wrong reason', result.wrong_rule],
-            ['Wrong effect', result.wrong_effect],
-            ['Hidden-instruction pairs that differed', result.twins],
-            ['Refused when it should have passed', result.false_block]].map(([k, n]) => (
-              <div key={k}><dt>{k}</dt><dd>{n}</dd></div>
-            ))}
+        <Note className="mb-4">
+          Five ways one of the 150 test purchases can come out wrong. Two of them are
+          dangerous and two are only untidy, so each row says which it is — a number
+          above zero is not automatically bad news.
+        </Note>
+        <dl className="count-list is-explained">
+          {COUNTS.map(([key, label, meaning, mustBeZero]) => {
+            const n = result[key];
+            return (
+              <div key={key} className={mustBeZero && n > 0 ? 'is-bad' : ''}>
+                <dt>
+                  {label}
+                  <span>{meaning}</span>
+                </dt>
+                <dd>{n}</dd>
+              </div>
+            );
+          })}
         </dl>
       </Disclosure>
+    </div>
+  );
+}
+
+// A run's answer, under the button that asked for it. There is one of these in
+// each panel: a single well under the second panel meant the control button at
+// the top ran, said "Checking 150 purchases…", and then printed its answer a
+// page and a half below under a heading about removing a rule - so from the
+// control's own panel nothing happened at all.
+function ResultWell({ busy, result, empty }) {
+  return (
+    <div className="result-well">
+      {busy ? <Skeleton height="6rem" />
+        : result?.error ? <ErrorLine>{result.error}</ErrorLine>
+          : result?.data ? <Result result={result.data} />
+            : <Note>{empty}</Note>}
     </div>
   );
 }
@@ -86,16 +137,20 @@ function Result({ result }) {
 export default function Mutate() {
   const mutations = useAsync(() => api('/api/mutations'));
   const [running, setRunning] = useState(null);
-  const [result, setResult] = useState(null);
+  // Kept per panel, so running a mutation does not erase the control run that
+  // is the only thing making that mutation's result mean anything.
+  const [results, setResults] = useState({});
 
   async function run(index, label) {
     if (running) return;
+    const from = index === null ? 'baseline' : 'mutation';
     setRunning(label);
-    setResult(null);
+    setResults(rs => ({ ...rs, [from]: null }));
     try {
-      setResult({ data: await api('/api/mutate', index === null ? {} : { index }) });
+      const data = await api('/api/mutate', index === null ? {} : { index });
+      setResults(rs => ({ ...rs, [from]: { data } }));
     } catch (e) {
-      setResult({ error: e.message });
+      setResults(rs => ({ ...rs, [from]: { error: e.message } }));
     } finally {
       setRunning(null);
     }
@@ -122,6 +177,8 @@ export default function Mutate() {
         <Button variant="primary" onClick={() => run(null, 'baseline')} disabled={!!running}>
           {running === 'baseline' ? 'Checking 150 purchases…' : 'Run it with nothing removed'}
         </Button>
+        <ResultWell busy={running === 'baseline'} result={results.baseline}
+                    empty="Not run yet. Press the button above — it takes about a second." />
       </Panel>
 
       <Panel
@@ -145,14 +202,8 @@ export default function Mutate() {
           </Async>
         </div>
 
-        <div className="result-well">
-          {result?.error && <ErrorLine>{result.error}</ErrorLine>}
-          {running && <Skeleton height="6rem" />}
-          {!running && !result && (
-            <Note>Nothing run yet. Start with the control above.</Note>
-          )}
-          {result?.data && <Result result={result.data} />}
-        </div>
+        <ResultWell busy={!!running && running !== 'baseline'} result={results.mutation}
+                    empty="No rule removed yet. Start with the control above, then pick one." />
       </Panel>
 
       <Panel

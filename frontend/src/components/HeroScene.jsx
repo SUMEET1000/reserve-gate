@@ -491,7 +491,8 @@ function mount(host) {
   const FIELD = token('--color-paper', FIELD_FALLBACK);
   const RING = token('--color-blue', RING_FALLBACK);
 
-  const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // Always run animations and interactive pointer follow across all devices
+  const still = false;
 
   const gl = renderer.getContext();
   const debug = gl.getExtension('WEBGL_debug_renderer_info');

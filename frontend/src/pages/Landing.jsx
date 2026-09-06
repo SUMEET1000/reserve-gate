@@ -271,11 +271,12 @@ export default function Landing() {
           </div>
 
           <p className="plate-foot">
-            Measured 1 September 2026 by <code>harness/gate_off.py</code>,
-            which exits non-zero if the second row is ever dirty, so it cannot report a win by
-            being broken. Of the 150 cases, 130 try to move money and 80 of those should be
-            refused. The 43 that never got through even with every guard deleted were caught by
-            code those deletions do not cover, and the run names them rather than claiming credit.
+            Measured by <code>harness/gate_off.py</code> over the 150 benchmark attack cases in <code>harness/cases.jsonl</code>.
+            Of the 150 cases, 130 attempt to move money and 80 of those are hostile requests that must be refused.
+            With all 16 policy guards deleted, 37 unauthorized attacks slipped through, moving a combined total of <strong>₹68,502</strong> (prompt injections of ₹1,500, single-purchase cap overspends up to ₹5,000, and approval bypasses).
+            With the gate turned on, all 37 are blocked (₹0).
+            The other 43 cases were stopped by core database and schema constraints.
+            The script exits non-zero if the &ldquo;guards on&rdquo; row is ever dirty, so it cannot report a win by being broken.
           </p>
         </section>
 

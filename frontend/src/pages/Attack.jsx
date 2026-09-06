@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { api, money } from '../lib/api.js';
 import { ProofPage } from '../components/Shell.jsx';
 import {
@@ -86,6 +86,20 @@ function rupeesToPaise(raw) {
   return typeof amount === 'number' && Number.isFinite(amount) ? amount * 100 : amount;
 }
 
+// One audit record drawn the way every other decision on this site is drawn.
+// The twin panel and the log at the foot of the page read the same record from
+// the same feed, so a disagreement between them would be a disagreement in the
+// record and not in two copies of the drawing.
+const auditDecision = r => ({
+  outcome: (r.event || '').toUpperCase(),
+  rule: r.rule,
+  reason: r.reason || r.event,
+  detail: r.detail,
+});
+
+const auditTitle = r => [r.receipt, r.amount != null ? money(r.amount, r.currency) : null]
+  .filter(Boolean).join(' · ');
+
 function Field({ id, label, hint, value, onChange, className = '', ...rest }) {
   const inputId = id || `field-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
   const hintId = hint ? `${inputId}-hint` : undefined;
@@ -172,15 +186,23 @@ export default function Attack() {
     }
   }
 
+  // Judged against the last money decision in this visitor's own audit log, and
+  // the record it used travels back in `from` so the panel can show which one.
+  // It used to judge `lastCall` - the last call this page happened to send -
+  // which is a strictly smaller thing: a purchase made on the guided demo is in
+  // the log, is on the page below, and was invisible here, so the panel answered
+  // about a call whose verdict a visitor could not see.
   async function runTwin() {
     setTwinBusy(true);
+    const from = lastAudit;
     try {
-      setTwin(await api('/api/twin', {
+      const r = await api('/api/twin', {
         text: payload,
-        tool: lastCall ? lastCall.tool : (call.tool || 'create_order'),
-        amount: lastCall ? lastCall.amount : (rupeesToPaise(call.amount) ?? 150000),
-        currency: lastCall ? lastCall.currency : call.currency,
-      }));
+        tool: from ? from.tool : (call.tool || 'create_order'),
+        amount: from ? from.amount : (rupeesToPaise(call.amount) ?? 150000),
+        currency: from ? from.currency : call.currency,
+      });
+      setTwin({ ...r, from });
     } catch (e) {
       setTwin({ error: e.message });
     } finally {
@@ -243,6 +265,11 @@ export default function Attack() {
   // The repeat pair keeps the place it had on the shelf, before the tools the
   // gate does not offer; only its amounts moved.
   const repeat = repeatGroup(typeof lastCall?.amount === 'number' ? lastCall.amount : null);
+  // The newest money decision in the log. `kind` is set by ledger.authorize, so
+  // it selects a judged call and skips the reservation and webhook bookkeeping
+  // records that carry no tool to judge.
+  const lastAudit = [...feed.rows].reverse()
+    .find(r => r.kind === 'money' && typeof r.amount === 'number');
   const groups = [edgeGroup(limits.max_txn, limits.approval_over),
                   ...ATTACKS.slice(0, -1), repeat, ...ATTACKS.slice(-1)];
   const tries = groups.reduce((n, [, items]) => n + items.length, 0);
@@ -393,10 +420,19 @@ export default function Attack() {
 
       <Panel
         title="Try to talk it into saying yes"
-        intro="Hide an instruction inside the product name. The same purchase is then judged
-               twice: once carrying your text, once with it removed. If both answers match,
-               the gate never read a word of it."
+        intro="Hide an instruction inside the product name. The last purchase in your audit
+               log is then judged twice: once carrying your text, once with it removed. If
+               both answers match, the gate never read a word of it."
       >
+        {lastAudit
+          ? <Note className="mb-4">
+              It will judge <b>{auditTitle(lastAudit) || lastAudit.tool}</b> — the last money
+              decision in your log, shown at the foot of this page.
+            </Note>
+          : <Note className="mb-4">
+              Your log is empty, so it will judge the request written in the form above. Send a
+              purchase first and this judges that one instead.
+            </Note>}
         <div className="field is-wide">
           <label htmlFor="hidden-instruction" className="field__label">Your hidden instruction</label>
           <textarea id="hidden-instruction" rows={2} value={payload} onChange={e => setPayload(e.target.value)} />
@@ -407,6 +443,12 @@ export default function Attack() {
         {twin?.error && <ErrorLine>{twin.error}</ErrorLine>}
         {twin && !twin.error && (
           <div className="mt-6">
+            {twin.from && (
+              <div className="mb-6">
+                <Marginal>The audit record it judged</Marginal>
+                <Verdict decision={auditDecision(twin.from)} title={auditTitle(twin.from)} />
+              </div>
+            )}
             <p className="twin-said">
               {twin.identical
                 ? <><b className="text-allow">The two answers are identical.</b> Your text changed
@@ -426,7 +468,12 @@ export default function Attack() {
             </div>
             <Note className="mt-5">
               These are the only things a decision can see —{' '}
-              {twin.call_fields.map(f => <code key={f}>{f}</code>)}.
+              {/* Comma-separated, and that is a layout fix as much as a copy one: seven
+                  <code> chips with no whitespace between them are one unbreakable 60-character
+                  run, which at 390px pushed the page 167px wider than the viewport. */}
+              {twin.call_fields.map((f, i) => (
+                <Fragment key={f}>{i > 0 && ', '}<code>{f}</code></Fragment>
+              ))}.
               There is nowhere for a product name to sit, so no wording anyone invents can
               ever get through, which is a stronger claim than passing a list of examples.
             </Note>

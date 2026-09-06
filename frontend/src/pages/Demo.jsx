@@ -28,28 +28,43 @@ const CHECKPOINTS = [
   ['Prove the payment', 'Payment'],
 ];
 
+// Paise is stated beside the rupees. The tool's own docstring says the amount is
+// paise, but a small model reading "7,800 rupees" can still emit 7800, which is
+// 78 rupees, which the gate correctly ALLOWS - a demo that proves nothing. The
+// committed recording's question says "780000 paise" for the same reason, and it
+// is the wording measured to work.
+const askQuestion = (thing, rupees) =>
+  `Buy a ${thing} for ₹${groupRupees(rupees)} (${rupees * 100} paise). `
+  + 'Use the create_order tool.';
+
 // The box opens on the refusal, because that is the beat a panel is here for: a
 // real model proposing a purchase that is over the ceiling, and being stopped by
 // a rule with a name. The two chips are the other two verdicts, so three
 // questions - which is all a visitor gets - reach ALLOW, HOLD and BLOCK.
 //
-// Every one of them states paise beside the rupees. The tool's own docstring says
-// the amount is paise, but a small model reading "7,800 rupees" can still emit
-// 7800, which is 78 rupees, which the gate correctly ALLOWS - a demo that proves
-// nothing. The committed recording's question says "780000 paise" for the same
-// reason, and it is the wording measured to work.
-const PREFILL = 'Buy a television for ₹7,800 (780000 paise). Use the create_order tool.';
-
-// Hedged, because the verdict depends on the limits the visitor set in the
-// checkpoint above and those are theirs to change. Lower the budget and "should
-// pass" becomes a BLOCK, and the label is then simply wrong about what happened.
-// "Likely" is the convention the fixed basket beneath already uses.
-const EXAMPLES = [
-  ['A small buy, likely allowed',
-   'Buy a desk lamp for ₹1,200 (120000 paise). Use the create_order tool.'],
-  ['A mid-size buy, likely held for approval',
-   'Buy a keyboard for ₹3,500 (350000 paise). Use the create_order tool.'],
-];
+// All three are priced off the limits the visitor set at checkpoint 01, not off
+// policy.yaml's defaults. Each amount has to land on the side of the line its
+// label claims, and a fixed ₹1,200 / ₹3,500 / ₹7,800 did that at the default
+// ₹2,000 / ₹5,000 and nowhere else: set the ask-line to ₹500 and the "small buy"
+// was held while both of the others were blocked.
+//
+// `approval_over < max_txn` is enforced by validateLimits here and by
+// load_config server-side, so there is always room between the two for the hold
+// price. The labels stay hedged all the same: R1 refuses anything over what is
+// left of the budget, whatever R5 would have said.
+function askExamples({ max_txn, approval_over }) {
+  const max = Math.max(1, Number(max_txn) || 0);
+  const app = Math.max(1, Math.min(Number(approval_over) || 0, max - 1));
+  return {
+    block: askQuestion('television', max + Math.max(1, Math.ceil(max / 2))),
+    picks: [
+      ['A small buy, likely allowed',
+       askQuestion('desk lamp', Math.max(1, Math.floor(app / 2)))],
+      ['A mid-size buy, likely held for approval',
+       askQuestion('keyboard', app + Math.max(1, Math.floor((max - app) / 2)))],
+    ],
+  };
+}
 
 const PREVIEW = [
   ['Headphones', '₹1,800', 'Likely allowed', true],
@@ -152,7 +167,13 @@ export default function Demo() {
   const [shopState, setShopState] = useState({ text: '' });
   const [shopping, setShopping] = useState(false);
   const [results, setResults] = useState(null);
-  const [question, setQuestion] = useState(PREFILL);
+  // Which example is in the box, rather than a copy of its text. Held this way
+  // so the question is re-derived from the current limits on every render: a
+  // copy taken when the page loaded would still quote policy.yaml's numbers
+  // after the visitor applied their own at checkpoint 01. `pick` is null once
+  // they type, and their words are then never overwritten.
+  const [pick, setPick] = useState('block');
+  const [written, setWritten] = useState('');
   const [asking, setAsking] = useState(false);
   const [askState, setAskState] = useState({ text: '' });
   // The last reply, for the status line and the four beats, and the rows it
@@ -195,7 +216,7 @@ export default function Demo() {
   const [liveBusy, setLiveBusy] = useState(false);
 
   const go = n => document.getElementById(`step-${n}`)?.scrollIntoView({
-    behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    behavior: 'smooth',
     block: 'start',
   });
 
@@ -381,6 +402,10 @@ export default function Demo() {
   // pass could not reach the RECORDED FALLBACK state at all until this came out.
   const spent = Boolean(askData && askData.live === true && askData.questions_left === 0);
 
+  const examples = askExamples(limits);
+  const question = pick === null ? written
+    : pick === 'block' ? examples.block : examples.picks[pick][1];
+
   // The AI's decisions lead, because they are what the page is now for; the fixed
   // test's rows follow. Both are real decisions from the same ledger, so the
   // tally counts them together.
@@ -514,14 +539,14 @@ export default function Demo() {
               <textarea id="ask" rows={2} required maxLength={500}
                         aria-describedby="ask-hint"
                         value={question} disabled={asking}
-                        onChange={e => setQuestion(e.target.value)} />
+                        onChange={e => { setPick(null); setWritten(e.target.value); }} />
             </div>
 
             <div className="ask-picks">
-              {EXAMPLES.map(([label, text]) => (
+              {examples.picks.map(([label], i) => (
                 <Button key={label} type="button" roll={false} className="ask-pick"
                         aria-label={`Fill the instruction with an example: ${label}`}
-                        disabled={asking} onClick={() => setQuestion(text)}>
+                        disabled={asking} onClick={() => setPick(i)}>
                   {label}
                 </Button>
               ))}

@@ -130,7 +130,8 @@ function App({ initialPage }) {
 
     if (!replay && targetPage === currentPage && !push) return;
 
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // Run page transitions across all devices
+    const reduced = false;
     if (reduced) {
       if (!replay) {
         setCurrentPage(targetPage);

@@ -11,13 +11,19 @@ import {
 // attack is one click; picking a preset and then pressing a separate Send was
 // two steps to learn one thing.
 
+// The four edge cases are edges of *this visitor's* limits, so they are computed
+// from the block rather than written down. Fixed at policy.yaml's numbers, the
+// button labelled "exactly at the single-purchase limit" sent ~5,000 to someone
+// whose cap was 500 and came back BLOCK R5 - the page demonstrating the wrong
+// thing under the right label.
+const edgeGroup = (cap, ask) => ['Amounts at the edge of your limits', [
+  ['Exactly at the single-purchase limit', { amount: cap }],
+  ['One paisa over that limit', { amount: cap + 1 }],
+  ['One paisa under it', { amount: cap - 1 }],
+  ['Big enough that it must ask you first', { amount: Math.min(cap, ask + 1) }],
+]];
+
 const ATTACKS = [
-  ['Amounts at the edge of your limits', [
-    ['Exactly at the single-purchase limit', { amount: 500000 }],
-    ['One paisa over that limit', { amount: 500001 }],
-    ['One paisa under it', { amount: 499999 }],
-    ['Big enough that it must ask you first', { amount: 250000 }],
-  ]],
   ['Amounts that are not really amounts', [
     ['A negative amount', { amount: -50000 }],
     ['Zero', { amount: 0 }],
@@ -79,6 +85,9 @@ export default function Attack() {
   const [block, setBlock] = useState(null);
   const [blockError, setBlockError] = useState(null);
   const [blockState, setBlockState] = useState({ text: '' });
+  // policy.yaml's numbers until the block answers, so the edge buttons render
+  // before the first response and then correct themselves.
+  const [limits, setLimits] = useState({ max_txn: 500000, approval_over: 200000 });
 
   const [call, setCall] = useState({
     tool: 'create_order', amount: '500', currency: 'INR', key: '',
@@ -96,7 +105,9 @@ export default function Attack() {
   const [whBusy, setWhBusy] = useState(null);
 
   const refresh = useCallback(() => {
-    api('/api/session').then(s => setBlock(s.block)).catch(e => setBlockError(e.message));
+    api('/api/session')
+      .then(s => { setBlock(s.block); if (s.limits) setLimits(s.limits); })
+      .catch(e => setBlockError(e.message));
   }, []);
   useEffect(refresh, [refresh]);
 
@@ -180,7 +191,8 @@ export default function Attack() {
     }
   }
 
-  const tries = ATTACKS.reduce((n, [, items]) => n + items.length, 0);
+  const groups = [edgeGroup(limits.max_txn, limits.approval_over), ...ATTACKS];
+  const tries = groups.reduce((n, [, items]) => n + items.length, 0);
 
   return (
     <ProofPage
@@ -213,7 +225,7 @@ export default function Attack() {
             'Expired. The very instant it runs out, purchases stop.')}>
             Jump to its end date
           </Button>
-          <Button disabled={acting} onClick={() => act('/api/session/reset', 'Fresh budget, back at the defaults.')}>
+          <Button disabled={acting} onClick={() => act('/api/session/reset', 'Fresh budget, at the limits you set.')}>
             Start over
           </Button>
           {blockState.text && (
@@ -230,7 +242,7 @@ export default function Attack() {
                appears underneath."
       >
         <div className="shelf">
-          {ATTACKS.map(([group, items], index) => (
+          {groups.map(([group, items], index) => (
             <details key={group} className="shelf__group" open={index === 0}>
               {/* The group name is a key in the margin, not a heading: these are
                   five drawers of one shelf, not five sections of a document. */}

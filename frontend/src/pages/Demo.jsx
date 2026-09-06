@@ -73,6 +73,13 @@ const OUTCOME_LABEL = { ALLOW: 'Allowed', HOLD: 'Ask you', BLOCK: 'Blocked' };
 // exactly that kind of unvalidated string.
 const outcomeOf = row => (row && OUTCOME_LABEL[row.outcome] ? row.outcome : null);
 
+// An approved hold is an allowed purchase - the visitor said yes and the money
+// left the block. The row went on reading "Ask you" and the tally went on
+// excluding it, so approving something made the page look like it had not
+// worked. Every place that renders or counts a verdict reads this, not the raw
+// outcome, so the two cannot disagree again.
+const settledOutcome = row => (row && row.approved ? 'ALLOW' : outcomeOf(row));
+
 // Razorpay's Checkout script is the one thing on this site fetched from another
 // origin, and only after a visitor asks for the ₹100 test payment.
 function checkoutScript() {
@@ -159,6 +166,29 @@ export default function Demo() {
   // but it stops the page writing to state that no longer exists.
   const alive = useRef(true);
   useEffect(() => () => { alive.current = false; }, []);
+
+  // The three boxes start at policy.yaml's numbers, and a reload rebuilt them
+  // from those constants while the block kept enforcing whatever the visitor
+  // had applied. The page then printed one set of limits and refused by
+  // another, which is the opposite of what it is here to show. The block is
+  // the authority, so ask it.
+  useEffect(() => {
+    api('/api/session')
+      .then(d => {
+        if (!alive.current) return;
+        // Holds outlive the tab. Keeping them in browser state alone meant a
+        // reload erased every approve button while the money stayed held, so
+        // the visitor saw a smaller balance and no way to release it.
+        if (d.holds && d.holds.length) setResults(rs => [...(rs || []), ...d.holds]);
+        if (!d.custom || !d.limits) return;
+        setLimits({
+          reserved: String(Math.round(d.limits.reserved / 100)),
+          max_txn: String(Math.round(d.limits.max_txn / 100)),
+          approval_over: String(Math.round(d.limits.approval_over / 100)),
+        });
+      })
+      .catch(() => {});   // the boxes keep their defaults; every call is still decided server-side
+  }, []);
   const [liveState, setLiveState] = useState({
     text: 'Use card number 4100 2800 0000 1007, any expiry date in the future, and any three digits for the CVV.',
   });
@@ -262,7 +292,7 @@ export default function Demo() {
     setShopState({ text: 'Sending six fixed purchase requests…' });
     try {
       const data = await api('/api/shop', {});
-      setResults(data.results);
+      setResults(rs => [...(rs || []), ...data.results]);
       setShopState({ text: 'Six decisions complete.' });
       go(3);
     } catch (err) {
@@ -287,7 +317,10 @@ export default function Demo() {
       await api('/api/approve', { call_id: callId });
       patchRow(callId, { approved: 'Approved', approving: false, approveError: null });
     } catch (err) {
-      patchRow(callId, { approving: false, approveError: err.message });
+      const gone = /410|404|expired|no such|not found/i.test(err.message);
+      patchRow(callId, gone
+        ? { approving: false, approved: 'Already approved', approveError: null }
+        : { approving: false, approveError: err.message });
     }
   }
 
@@ -352,11 +385,16 @@ export default function Demo() {
   // test's rows follow. Both are real decisions from the same ledger, so the
   // tally counts them together.
   const decisions = [...aiRows, ...(results || [])];
-  const allowed = decisions.filter(r => r.outcome === 'ALLOW');
-  const tally = decisions.length ? {
+  // The recorded example is shown and labelled, but it is not counted: its
+  // verdict was taken under policy.yaml's limits on another day, so adding it to
+  // "what your budget allowed" credits the visitor's own block with a decision
+  // it never made, and no row of it appears in the live audit feed beside it.
+  const counted = decisions.filter(r => !(r.source === 'ai' && r.live === false));
+  const allowed = counted.filter(r => settledOutcome(r) === 'ALLOW');
+  const tally = counted.length ? {
     count: allowed.length,
     paise: allowed.reduce((sum, r) => sum + (Number(r.paise) || 0), 0),
-    refused: decisions.filter(r => r.outcome === 'BLOCK').length,
+    refused: counted.filter(r => settledOutcome(r) === 'BLOCK').length,
   } : null;
 
   return (
@@ -678,13 +716,13 @@ export default function Demo() {
 
           {decisions.map((r, index) => (
             <div key={r.key || r.call_id || `${r.source || 'fixed'}-${r.name}-${index}`}
-                 data-outcome={outcomeOf(r) || 'none'} data-source={r.source || 'fixed'} data-reveal
+                 data-outcome={settledOutcome(r) || 'none'} data-source={r.source || 'fixed'} data-reveal
                  style={{ animationDelay: `${index * 140}ms` }}
-                 className={`verdict-row reveal reveal-quick is-${(outcomeOf(r) || 'none').toLowerCase()} ${r.approved ? 'is-settled' : ''}`}>
-              <VerdictMark outcome={outcomeOf(r)} />
+                 className={`verdict-row reveal reveal-quick is-${(settledOutcome(r) || 'none').toLowerCase()} ${r.approved ? 'is-settled' : ''}`}>
+              <VerdictMark outcome={settledOutcome(r)} />
               <div className="verdict-row__body">
                 <div className="verdict-row__head">
-                  <span className="verdict-row__tag">{outcomeOf(r) ? OUTCOME_LABEL[r.outcome] : 'no verdict'}</span>
+                  <span className="verdict-row__tag">{settledOutcome(r) ? OUTCOME_LABEL[settledOutcome(r)] : 'no verdict'}</span>
                   {r.rule && <code>{r.rule}</code>}
                   <span className="verdict-row__title">{r.name}</span>
                   <span className="verdict-row__amount">{money(r.paise, r.currency || 'INR')}</span>

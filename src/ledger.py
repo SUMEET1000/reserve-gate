@@ -299,6 +299,30 @@ def _expire_stale(conn: sqlite3.Connection, now: datetime) -> None:
                  (iso(now),))
 
 
+def sweep_expired(conn: sqlite3.Connection, now: datetime | None = None) -> None:
+    """Run that housekeeping for a caller who is only reading the balance.
+
+    `_expire_stale` ran inside `authorize` alone, so a visitor who made a hold,
+    waited past its TTL and refreshed still saw the money held; the next
+    purchase quietly handed it back and the balance appeared to jump. A read is
+    not a money call, so this takes the same write lock on its own and commits.
+    """
+    now = now or now_utc()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+    except sqlite3.OperationalError as e:
+        # Contention leaves the balance stale rather than wrong, and the next
+        # money call sweeps anyway - but it is recorded rather than swallowed.
+        audit.record(event="sweep_skipped", reason=f"ledger busy: {e}")
+        return
+    try:
+        _expire_stale(conn, now)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
 def _load_state(conn: sqlite3.Connection, call: Call, key: str, now: datetime,
                 velocity: int, bound_hash: str) -> State:
     block = snapshot(conn, call.caller_id)

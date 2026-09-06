@@ -26,7 +26,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from dotenv import load_dotenv
 
 from . import audit, dashboard, ledger
-from .policy import HOLD, Call, load_config
+from .policy import HOLD, Call, PolicyRefusal, load_config
 from .upstream import UpstreamError, call_razorpay
 from .webhook import handle as handle_webhook
 
@@ -88,7 +88,7 @@ def caller_id() -> str:
     return ledger.caller_id_for(os.environ.get("RESERVE_GATE_TOKEN") or "stdio-local")
 
 
-def _refusal(decision) -> ValueError:
+def _refusal(decision) -> PolicyRefusal:
     """Turn a refusal into a tool error, never a protocol error.
 
     The MCP spec reserves JSON-RPC errors for unknown tools and malformed
@@ -99,8 +99,8 @@ def _refusal(decision) -> ValueError:
     model at all, so the agent loops proposing the call it was just refused.
     """
     detail = " ".join(f"{k}={v}" for k, v in decision.detail.items() if k != "result")
-    return ValueError(f"{decision.outcome} [{decision.rule}] {decision.reason}"
-                      + (f" | {detail}" if detail else ""))
+    return PolicyRefusal(f"{decision.outcome} [{decision.rule}] {decision.reason}"
+                        + (f" | {detail}" if detail else ""), decision)
 
 
 async def _settle(conn, tool: str, ref: ledger.Ref, args: dict) -> Any:

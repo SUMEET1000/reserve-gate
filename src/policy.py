@@ -122,6 +122,21 @@ class Decision:
         return self.outcome == ALLOW
 
 
+class PolicyRefusal(ValueError):
+    """A call this gate refused, carrying the decision that refused it.
+
+    It stays a ValueError so every existing caller and every FastMCP tool error
+    behaves exactly as before. The type exists so a caller can tell "your own
+    rules said no" from "Razorpay was unreachable": the live-checkout route
+    caught both in one `except Exception` and reported a refusal to the visitor
+    as a payment-provider outage.
+    """
+
+    def __init__(self, message: str, decision: "Decision"):
+        super().__init__(message)
+        self.decision = decision
+
+
 def decide(call: Call, state: State, config: Config, now: datetime) -> Decision:
     """ALLOW, BLOCK or HOLD, with the rule that decided it.
 
@@ -144,8 +159,18 @@ def _decide(call: Call, state: State, config: Config, now: datetime) -> Decision
     # without re-running any rule, and a key reused with different parameters is
     # a conflict rather than a second success.
     if state.conflict:
-        return Decision(BLOCK, "G16", "idempotency key already used with different parameters",
-                        {"idem_key": call.idem_key})
+        # Naming which key is the whole of the message. A caller who sent one
+        # can go and look at it; a caller who sent none was told their key was
+        # reused while the detail read `idem_key: null`, and the key they had
+        # never seen is derived from the money alone - so two different items at
+        # one price, seconds apart, read as a reuse they could not account for.
+        return Decision(BLOCK, "G16",
+                        "idempotency key already used with different parameters"
+                        if call.idem_key else
+                        "no idempotency key was sent, so one was derived from the amount"
+                        " and currency, and a call with those has already run with different"
+                        " arguments - send an idempotency_key to keep the two apart",
+                        {"idem_key": call.idem_key, "derived": not call.idem_key})
     if state.in_flight:
         return Decision(BLOCK, "R7", "a call with this idempotency key is still running",
                         {"idem_key": call.idem_key})

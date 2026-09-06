@@ -433,6 +433,10 @@ def test_connect_migrates_the_single_live_checkout_slot(tmp_path):
     ({"amount": 50000, "currency": "USD"}, "R0"),
     ({"amount": 50000, "tool": "create_refund"}, "G15"),
     ({"amount": 50000, "tool": "create_instant_payout"}, "G15"),
+    # A tool that is not a string used to be coerced to `create_order`, so both
+    # of these were allowed and reserved money against the block.
+    ({"amount": 50000, "tool": {}}, "G15"),
+    ({"amount": 50000, "tool": True}, "G15"),
 ])
 def test_the_console_refuses_what_the_gate_refuses(c, body, rule):
     d = c.post("/api/attack", json=body).json()["decision"]
@@ -446,6 +450,72 @@ def test_a_reused_key_with_a_changed_amount_is_a_conflict(c):
     assert same["decision"]["detail"].get("replay") is True
     changed = c.post("/api/attack", json={"amount": 60000, "idempotency_key": "k"}).json()
     assert (changed["decision"]["outcome"], changed["decision"]["rule"]) == ("BLOCK", "G16")
+
+
+@pytest.mark.parametrize("key", [[], True, 7, {"a": 1}])
+def test_a_key_that_is_not_a_string_still_binds_its_arguments(c, key):
+    """G16 held only for keys a well-behaved client sends.
+
+    A non-string key was dropped rather than refused, so the call fell back to
+    a derived key, and a retry carrying a changed amount derived a second one
+    and reserved twice over.
+    """
+    first = c.post("/api/attack", json={"amount": 50000, "idempotency_key": key}).json()
+    assert first["decision"]["outcome"] == "ALLOW", first
+    changed = c.post("/api/attack", json={"amount": 60000, "idempotency_key": key}).json()
+    assert (changed["decision"]["outcome"], changed["decision"]["rule"]) == ("BLOCK", "G16"), changed
+    # The control: a well-formed string key behaves the same way, so the
+    # assertion above is not passing because every call happens to conflict.
+    ok = c.post("/api/attack", json={"amount": 70000, "idempotency_key": "fresh"}).json()
+    assert ok["decision"]["outcome"] == "ALLOW", ok
+
+
+def test_the_valid_webhook_button_can_be_pressed_twice(c):
+    """It bricked the visitor's own session on the second press.
+
+    The demo payment id was derived from the session, so event two offered the
+    same payment against a different held order. The ledger is right to read
+    that as one payment claimed twice and freeze - the defect was the button
+    minting a payment id that could not be settled more than once.
+    """
+    assert c.post("/api/shop", json={}).status_code == 200
+    first = c.post("/api/webhook-replay", json={"variant": "apply"}).json()
+    assert (first["effect"], first["block"]["frozen"]) == ("APPLY", False), first
+    second = c.post("/api/webhook-replay", json={"variant": "apply"}).json()
+    assert (second["effect"], second["block"]["frozen"]) == ("APPLY", False), second
+    # The control: an ordinary purchase still goes through afterwards, so the
+    # assertion above is not passing on a block that was never usable.
+    after = c.post("/api/attack", json={"amount": 1000}).json()["decision"]
+    assert after["outcome"] == "ALLOW", after
+
+
+def test_starting_over_keeps_the_limits_the_visitor_set(c, app):
+    """Start over sends no fields, and the reset rebuilt from policy.yaml.
+
+    A visitor who had set their own cap pressed it, got the file's defaults
+    back, and every later refusal on the page was decided by limits they had
+    never chosen.
+    """
+    mine = {"reserved": 200000, "max_txn": 50000, "approval_over": 20000}
+    assert c.post("/api/session/reset", json=mine).status_code == 200
+    after = c.post("/api/session/reset", json={}).json()
+    assert after["custom"] is True, after
+    for field, value in mine.items():
+        assert after["limits"][field] == value, (field, after["limits"])
+    # It really is a fresh block, not merely the old one handed back.
+    assert (after["block"]["held"], after["block"]["spent"]) == (0, 0), after
+    # The control: a visitor who never customised still gets the file's limits,
+    # so the assertion above is not passing because reset ignores its base.
+    fresh = other(app).post("/api/session/reset", json={}).json()
+    assert fresh["custom"] is False and fresh["limits"]["reserved"] == 1000000, fresh
+
+
+def test_changing_one_limit_leaves_the_other_two_alone(c):
+    c.post("/api/session/reset", json={"reserved": 200000, "max_txn": 50000,
+                                       "approval_over": 20000})
+    after = c.post("/api/session/reset", json={"approval_over": 10000}).json()
+    assert after["limits"]["approval_over"] == 10000, after
+    assert (after["limits"]["reserved"], after["limits"]["max_txn"]) == (200000, 50000), after
 
 
 def test_a_revoked_block_refuses_the_next_call_instantly(c):

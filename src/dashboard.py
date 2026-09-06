@@ -40,7 +40,7 @@ from datetime import datetime, timedelta, timezone
 from starlette.responses import JSONResponse, PlainTextResponse, Response
 
 from . import audit, ledger, webhook
-from .policy import ALLOW, HOLD, Call, Config, State, decide, load_config
+from .policy import ALLOW, HOLD, Call, Config, PolicyRefusal, State, decide, load_config
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
@@ -282,6 +282,32 @@ _SESSIONS: dict[str, Config] = {}
 # is the operator of their own block, so they can release it; the agent's G12
 # separation is untouched because nothing here reaches src.server._HOLDS.
 _HOLDS: dict[str, tuple[str, ledger.Ref]] = {}
+
+
+def pending_holds(conn, token: str) -> list[dict]:
+    """This visitor's holds that are still waiting for them, newest first.
+
+    The page kept its own list of them in browser memory alone, so a reload -
+    or following a link and coming back - erased every approve button while the
+    money stayed held against the block. The visitor was left with a smaller
+    balance and no visible way to release it, which reads as the gate having
+    taken their money. The registry is scoped by token here exactly as
+    api_approve scopes it, so one visitor can never see another's.
+    """
+    out = []
+    for call_id, (held_by, ref) in _HOLDS.items():
+        if held_by != token:
+            continue
+        row = conn.execute("SELECT amount, currency, state FROM reservations"
+                           " WHERE reservation_id = ?", (ref.reservation_id,)).fetchone()
+        if row is None or row["state"] != "held":
+            continue
+        # No name: the purchase label rides in the audit record, not on the
+        # reservation row, and the amount is what the visitor is approving.
+        out.append({"call_id": call_id, "paise": row["amount"],
+                    "currency": row["currency"], "name": "Waiting for your approval",
+                    "outcome": "HOLD", "source": "restored"})
+    return out[::-1]
 # token -> the last event id this visitor's webhook panel sent, so "send it
 # again" replays a real id rather than minting a new one.
 _LAST_EVENT: dict[str, str] = {}
@@ -389,6 +415,21 @@ async def api_live_order(request):
                          " WHERE id = ? AND status = 'pending'", (order_id, slot))
         finally:
             conn.close()
+    except PolicyRefusal as refused:
+        # The gate saying no is the product working, not the provider failing.
+        # Both landed in the `except Exception` below, so a visitor who lowered
+        # their per-call cap and then pressed Buy was told Razorpay was down.
+        conn = ledger.connect()
+        try:
+            conn.execute("UPDATE live_checkout_slots SET status = 'failed'"
+                         " WHERE id = ? AND status = 'pending'", (slot,))
+        finally:
+            conn.close()
+        return live_reply({"error": str(refused), "refused_by_policy": True,
+                           "rule": refused.decision.rule,
+                           "outcome": refused.decision.outcome,
+                           "recorded_proof": True},
+                          token, demo_token, request, 409)
     except Exception:
         conn = ledger.connect()
         try:
@@ -576,8 +617,13 @@ async def api_session(request):
     conn = ledger.connect()
     try:
         ledger.init(conn, config_of(token), caller_id=caller_of(token))
+        # The page polls this for the balance, so it is where a hold that has
+        # outlived its TTL has to come back. Without it the money stayed held
+        # until the visitor happened to buy something else, which released it.
+        ledger.sweep_expired(conn)
         payload = {"block": block_json(conn, caller_of(token)),
                    "limits": dataclasses.asdict(config_of(token)),
+                   "holds": pending_holds(conn, token),
                    "custom": token in _SESSIONS}
     finally:
         conn.close()
@@ -594,6 +640,12 @@ async def api_session_reset(request):
     session token, so the new block is a new caller and the old one is simply
     left behind - which is what a Render spin-down does to it anyway.
     """
+    # The visitor's own limits are the base, not policy.yaml's. Resetting is how
+    # this page starts a fresh block, and rebuilding from the file threw their
+    # limits away every time: Start over sends no fields at all, so it handed
+    # back the defaults, and a partial change silently reverted the two fields
+    # it did not name.
+    before = config_of(session_token(request))
     body = await body_of(request)
     chosen, errors = {}, []
     for field in ("reserved", "max_txn", "approval_over"):
@@ -604,7 +656,7 @@ async def api_session_reset(request):
             errors.append(f"{field} must be a whole number of paise between 100 and 10^9")
         else:
             chosen[field] = value
-    cfg = dataclasses.replace(default_config(), **chosen)
+    cfg = dataclasses.replace(before, **chosen)
     if not errors:
         if cfg.approval_over >= cfg.max_txn:
             errors.append("the approval line has to sit below the per-call cap, or R5"
@@ -616,13 +668,14 @@ async def api_session_reset(request):
         return reply({"error": errors[0]}, session_token(request), request, 400)
 
     token = secrets.token_urlsafe(16)
-    if chosen:
+    custom = cfg != default_config()
+    if custom:
         _SESSIONS[token] = cfg
     conn = ledger.connect()
     try:
         ledger.init(conn, cfg, caller_id=caller_of(token))
         payload = {"block": block_json(conn, caller_of(token)),
-                   "limits": dataclasses.asdict(cfg), "custom": bool(chosen)}
+                   "limits": dataclasses.asdict(cfg), "custom": custom}
     finally:
         conn.close()
     return reply(payload, token, request)
@@ -694,9 +747,19 @@ async def api_attack(request):
     """One hand-built call, decided by the same rules as the agent's."""
     token = session_token(request)
     body = await body_of(request)
-    tool = body.get("tool") if isinstance(body.get("tool"), str) else "create_order"
+    # A `tool` or an `idempotency_key` that is not a string reaches the gate as
+    # its own text, never as a default. Coercing them opened a hole in each:
+    # `{}` and `true` both arrived at G15 as `create_order` and were allowed,
+    # and a non-string key was dropped, so a retry carrying a changed amount
+    # derived a fresh key and reserved a second time instead of conflicting
+    # under G16.
+    raw_tool = body.get("tool", "create_order")
+    tool = raw_tool if isinstance(raw_tool, str) else json.dumps(raw_tool)
     receipt = body.get("receipt") if isinstance(body.get("receipt"), str) else None
-    key = body.get("idempotency_key")
+    raw_key = body.get("idempotency_key")
+    key = raw_key
+    if not isinstance(raw_key, (str, type(None))):
+        key = json.dumps(raw_key)
     cfg, caller = config_of(token), caller_of(token)
     conn = ledger.connect()
     try:
@@ -707,7 +770,7 @@ async def api_attack(request):
         d = place(conn, caller, cfg, token, amount=body.get("amount"),
                   currency=body.get("currency", "INR"),
                   receipt=receipt[:40] if receipt else None,
-                  key=key if isinstance(key, str) and key else None, tool=tool[:60],
+                  key=key or None, tool=tool[:60],
                   idem_args={"amount": body.get("amount"), "receipt": receipt})
         payload = {"decision": d, "block": block_json(conn, caller)}
     finally:
@@ -875,7 +938,16 @@ async def api_webhook_replay(request):
 
         payload = {"event": "order.paid" if variant == "out_of_order" else "payment.captured",
                    "payload": {"payment": {"entity": {
-                       "id": "pay_demo_" + token[:12], "order_id": r["order_id"],
+                       # One payment settles one order, so the id is derived from
+                       # the order rather than from the session. It was the
+                       # session's alone, so a second press of Valid webhook
+                       # offered the same payment against the next held order -
+                       # which the ledger rightly reads as one payment claimed
+                       # twice and freezes the block on. The button bricked the
+                       # visitor's own session and the gate looked at fault.
+                       "id": "pay_demo_" + hashlib.sha256(
+                           (token + r["order_id"]).encode()).hexdigest()[:16],
+                       "order_id": r["order_id"],
                        "amount": r["amount"] + 1 if variant == "changed_amount" else r["amount"],
                        "currency": r["currency"], "status": "captured"}}}}
         raw = json.dumps(payload, separators=(",", ":")).encode()
@@ -1020,10 +1092,16 @@ async def api_mutate(request):
 # ------------------------------------------------------------- the artefacts
 
 async def api_rules(request):
-    return reply({"config": dataclasses.asdict(default_config()),
+    # This visitor's own limits, not the file's. The page prints these under the
+    # sentence "these are the live values ... every decision on this site follows
+    # the new ones straight away", which was false for anyone who had changed
+    # their limits on /demo: the numbers stayed at policy.yaml's while the block
+    # enforced theirs.
+    token = session_token(request)
+    return reply({"config": dataclasses.asdict(config_of(token)),
                   "rules": json.loads(artefact("web/rules.json") or "{}"),
                   "provenance": artefact("harness/provenance.md")},
-                 session_token(request), request)
+                 token, request)
 
 
 @functools.lru_cache(maxsize=1)

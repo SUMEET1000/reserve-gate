@@ -789,6 +789,11 @@ async def api_twin(request):
     token = session_token(request)
     body = await body_of(request)
     text = body.get("text") if isinstance(body.get("text"), str) else ""
+    # The tool travels too. It was fixed at create_order, so asking about the
+    # last call the page made - a refund, an invented payout, anything G15
+    # refuses - silently judged an ordinary order instead, and the panel
+    # answered ALLOW under a verdict that said BLOCK.
+    tool = body.get("tool") if isinstance(body.get("tool"), str) else "create_order"
     cfg, caller = config_of(token), caller_of(token)
     conn = ledger.connect()
     try:
@@ -800,7 +805,7 @@ async def api_twin(request):
     def run(free_text: str) -> dict:
         # `free_text` would ride on the wire as the receipt and the notes. There
         # is nowhere on Call to put it, which is the entire demonstration.
-        call = Call(tool="create_order", caller_id=caller,
+        call = Call(tool=tool[:60], caller_id=caller,
                     amount=body.get("amount", 150000),
                     currency=body.get("currency", "INR"))
         d = decide(call, State(block=block), cfg, ledger.now_utc())

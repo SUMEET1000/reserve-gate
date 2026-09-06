@@ -12,15 +12,36 @@ import {
 // two steps to learn one thing.
 
 // The four edge cases are edges of *this visitor's* limits, so they are computed
-// from the block rather than written down. Fixed at policy.yaml's numbers, the
-// button labelled "exactly at the single-purchase limit" sent ~5,000 to someone
-// whose cap was 500 and came back BLOCK R5 - the page demonstrating the wrong
-// thing under the right label.
+// from the block rather than written down. Fixed at policy.yaml's numbers, they
+// asked about 5,000 of someone whose cap was 500.
+//
+// Which four, and why not the obvious ones. `decide` takes R5 first and only
+// then holds on `amount > approval_over`, and `load_config` refuses to start
+// unless approval_over sits below max_txn - so the cap is always above the
+// ask-line and an amount at the cap can never be ALLOW, whatever anyone
+// configures. A drawer built around the cap alone therefore answered HOLD,
+// BLOCK, HOLD, HOLD: three of its four buttons said the same thing and none of
+// them could show a purchase going through. The ask-line is the one edge that
+// can, because that comparison is `>` and not `>=`, so the line itself passes.
+// Both ask-line amounts are under the cap by the invariant above, so they need
+// no clamp.
+// The replay pair repeats *the purchase this page just made*, not a canned
+// 500. Its label promises "again", and sending a fixed amount instead answered
+// a question nobody had asked. Both carry one client key so the pair stays
+// deterministic whatever came before it: press the first twice for the R7
+// replay, then the second for the G16 conflict. `last` is null until something
+// has been sent, and the pair falls back to 50000 so the buttons still work on
+// a page nobody has touched.
+const repeatGroup = last => ['The same purchase, twice', [
+  ['Send an identical request again', { amount: last ?? 50000, key: 'reused-key' }],
+  ['Same request, different price', { amount: (last ?? 50000) + 10000, key: 'reused-key' }],
+]];
+
 const edgeGroup = (cap, ask) => ['Amounts at the edge of your limits', [
-  ['Exactly at the single-purchase limit', { amount: cap }],
-  ['One paisa over that limit', { amount: cap + 1 }],
-  ['One paisa under it', { amount: cap - 1 }],
-  ['Big enough that it must ask you first', { amount: Math.min(cap, ask + 1) }],
+  ['Exactly at the ask-me-first line', { amount: ask }],                    // ALLOW
+  ['One paisa over that line', { amount: ask + 1 }],                        // HOLD
+  ['Exactly at the single-purchase limit', { amount: cap }],                // HOLD
+  ['One paisa over that limit', { amount: cap + 1 }],                       // BLOCK R5
 ]];
 
 const ATTACKS = [
@@ -36,10 +57,6 @@ const ATTACKS = [
   ['The wrong kind of money', [
     ['Dollars against a rupee budget', { amount: 50000, currency: 'USD' }],
     ['Yen, which counts money differently', { amount: 50000, currency: 'JPY' }],
-  ]],
-  ['The same purchase, twice', [
-    ['Send an identical request again', { amount: 50000, key: 'reused-key' }],
-    ['Same request, different price', { amount: 60000, key: 'reused-key' }],
   ]],
   ['Actions this gate does not offer', [
     ['Ask for a refund', { amount: 50000, tool: 'create_refund' }],
@@ -131,7 +148,10 @@ export default function Attack() {
       if (amount !== undefined) body.amount = amount;
       if (c.key) body.idempotency_key = c.key;
       const r = await api('/api/attack', body);
-      setLastCall({ amount: body.amount, currency: body.currency });
+      // The whole money identity, not just the amount: the twin has to judge the
+      // call that is on screen, and a refused tool judged as create_order came
+      // back ALLOW under a verdict that said BLOCK.
+      setLastCall({ tool: body.tool, amount: body.amount, currency: body.currency });
       setBlock(r.block);
       setOut({ decision: r.decision, title: label });
     } catch (e) {
@@ -157,6 +177,7 @@ export default function Attack() {
     try {
       setTwin(await api('/api/twin', {
         text: payload,
+        tool: lastCall ? lastCall.tool : (call.tool || 'create_order'),
         amount: lastCall ? lastCall.amount : (rupeesToPaise(call.amount) ?? 150000),
         currency: lastCall ? lastCall.currency : call.currency,
       }));
@@ -219,7 +240,11 @@ export default function Attack() {
     }
   }
 
-  const groups = [edgeGroup(limits.max_txn, limits.approval_over), ...ATTACKS];
+  // The repeat pair keeps the place it had on the shelf, before the tools the
+  // gate does not offer; only its amounts moved.
+  const repeat = repeatGroup(typeof lastCall?.amount === 'number' ? lastCall.amount : null);
+  const groups = [edgeGroup(limits.max_txn, limits.approval_over),
+                  ...ATTACKS.slice(0, -1), repeat, ...ATTACKS.slice(-1)];
   const tries = groups.reduce((n, [, items]) => n + items.length, 0);
 
   return (

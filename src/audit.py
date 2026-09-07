@@ -35,7 +35,7 @@ def _live_secrets() -> list[str]:
     return [v for v in (os.environ.get(n) for n in
                         ("RAZORPAY_KEY_SECRET", "RAZORPAY_KEY_ID",
                          "RAZORPAY_WEBHOOK_SECRET", "RESERVE_GATE_TOKEN",
-                         "GEMINI_API_KEY")) if v]
+                         "RESERVE_GATE_ADMIN_TOKEN", "GEMINI_API_KEY")) if v]
 
 
 def _scrub(value, secrets: list[str]):
@@ -70,11 +70,19 @@ def _digest(rec: dict) -> str:
     return hashlib.sha256(_canonical(rec).encode("utf-8")).hexdigest()
 
 
-# The tail of the chain for this process, and the file it belongs to. The first
-# write recovers it from disk, so a restart continues the chain rather than
-# starting a second one in the middle of the same file.
+# The tail of the chain for this process, the file it belongs to, and the size
+# that file had when this process last wrote it. The first write recovers the tail
+# from disk, so a restart continues the chain rather than starting a second one in
+# the middle of the same file.
+#
+# The size is what makes keeping the tail safe at all. Another writer appending
+# changes it, so the tail is re-read instead of being assumed: the stdio server,
+# a `buyer.py --live` run and the deployed process all share one configured path,
+# and a per-process cache gave parent, child and parent again two chains in one
+# file, with verify() reporting line 3 of an untampered log.
 _prev_hash: str | None = None
 _prev_path: str | None = None
+_prev_size: int = -1
 # record() read-modify-writes that tail and then appends. Two threads doing it
 # at once hand two records the same prev_hash, which forks the chain and fails
 # verify(). The two-thread ledger test already drives this path.
@@ -102,10 +110,14 @@ def record(**fields) -> dict:
     """Write one audit line and return it. Never raises on a serialisation
     problem: G4 turns any exception in the money path into a refusal, so a
     formatting fault in the log would refuse an honest call."""
-    global _prev_hash, _prev_path
+    global _prev_hash, _prev_path, _prev_size
     with _lock:
         p = path()
-        if _prev_path != p:
+        try:
+            size = os.path.getsize(p)
+        except OSError:
+            size = -1
+        if _prev_path != p or _prev_size != size:
             _prev_hash, _prev_path = tail_hash(p), p
 
         rec = {"ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -117,22 +129,33 @@ def record(**fields) -> dict:
                    "error": "record not serialisable", "prev_hash": _prev_hash}
             line = _canonical({**rec, "hash": _digest(rec)})
         rec["hash"] = json.loads(line)["hash"]
-        _prev_hash = rec["hash"]
         # encoding and newline are both explicit: the default on Windows is cp1252,
         # which raises on a rupee sign, and the default newline translation would
         # put CRLF in a file the chain is read back from.
         with open(p, "a", encoding="utf-8", newline="\n") as f:
             f.write(line + "\n")
+        # Only after the append. Advancing the tail before it meant a failed write
+        # left the cache pointing at a record no reader can see, so every later
+        # record linked to a missing one and the chain stayed broken after the
+        # disk recovered.
+        _prev_hash = rec["hash"]
+        try:
+            _prev_size = os.path.getsize(p)
+        except OSError:
+            _prev_size = -1
     return rec
 
 
-def verify(p: str | None = None) -> tuple[bool, int | None]:
+def verify(p: str | None = None, expected_tail: str | None = None) -> tuple[bool, int | None]:
     """Walk the chain. Returns (ok, the 1-based line number of the first bad
     record). B22: an edited record fails here rather than passing quietly.
 
-    This proves internal consistency. It cannot prove the file was never
-    rewritten wholesale - compare tail_hash() against the value published in
-    eval_report.md and committed to git for that.
+    A record removed from the middle breaks the next link and is named. A record
+    removed from the *end* leaves a valid prefix and cannot be seen from inside
+    the file at all - the same blind spot as a wholesale rewrite, and for the
+    same reason. Pass `expected_tail` (the digest published in eval_report.md and
+    committed to git) to close both: the walk then also has to arrive at it.
+    Without it, this proves internal consistency and completeness is unchecked.
     """
     try:
         with open(p or path(), encoding="utf-8") as f:
@@ -151,6 +174,10 @@ def verify(p: str | None = None) -> tuple[bool, int | None]:
         if rec.get("prev_hash") != prev or got != _digest(rec):
             return False, n
         prev = got
+    if expected_tail is not None and prev != expected_tail:
+        # A truncated log is a valid chain that stops early, so the line number
+        # is the one after the last record rather than a bad record's own.
+        return False, len([ln for ln in lines if ln.strip()]) + 1
     return True, None
 
 

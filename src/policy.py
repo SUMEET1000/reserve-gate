@@ -96,6 +96,7 @@ class Reservation:
     expires_at: datetime
     order_id: str | None = None
     payment_id: str | None = None
+    attempt_pending: bool = False   # a capture was sent and its outcome is unknown
 
 
 @dataclass(frozen=True)
@@ -207,7 +208,7 @@ def _decide(call: Call, state: State, config: Config, now: datetime) -> Decision
                         {"count": state.velocity_count})
 
     if call.tool == "capture_payment":
-        return _decide_capture(call, state, block, now)
+        return _decide_capture(call, state, block)
     return _decide_order(call, block, config)
 
 
@@ -256,7 +257,7 @@ def _decide_order(call: Call, block: Block, config: Config) -> Decision:
                     {"amount": amount, "available_after": block.available - amount})
 
 
-def _decide_capture(call: Call, state: State, block: Block, now: datetime) -> Decision:
+def _decide_capture(call: Call, state: State, block: Block) -> Decision:
     """Capture commits a reservation that create_order already took.
 
     No amount rule is applied here. Razorpay requires the capture amount to
@@ -277,12 +278,23 @@ def _decide_capture(call: Call, state: State, block: Block, now: datetime) -> De
     if res.state == "committed":
         return Decision(BLOCK, "R3", "this order was already captured",
                         {"order_id": call.order_id})
+    # R7 is keyed by the idempotency key, and the reservation is what is actually
+    # at stake. A second capture of the same order under a different key passed
+    # both the key check and the state check while the first attempt was still
+    # unresolved upstream, so two capture requests for one payment went out.
+    if res.attempt_pending:
+        return Decision(BLOCK, "R7", "a capture of this order is already in flight and its"
+                                     " outcome is not known yet",
+                        {"order_id": call.order_id})
+    # The released check above is the whole test, and there is deliberately no
+    # second one on the clock. A reservation only reaches here by its order_id, so
+    # Razorpay created a payable order for it; that hold now stands until the
+    # payment settles, and `_expire_stale` no longer takes it back. Refusing the
+    # capture on elapsed time would strand the amount as held and unspendable
+    # while the order was still chargeable.
     if res.state == "released":
         return Decision(BLOCK, "R3", "the reservation for this order was already released",
                         {"order_id": call.order_id})
-    if now >= res.expires_at:
-        return Decision(BLOCK, "R3", "the reservation expired and its amount returned to the block",
-                        {"order_id": call.order_id, "expires_at": res.expires_at.isoformat()})
     if type(call.amount) is not int or call.amount != res.amount:
         return Decision(BLOCK, "R0", "capture amount does not equal the reserved amount",
                         {"amount": repr(call.amount), "reserved_amount": res.amount})

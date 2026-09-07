@@ -11,6 +11,7 @@ only once per process, so building one per fixture makes the first test pass and
 every later one fail before the route is even reached (e18). One test does build
 the real MCP app, on purpose, because the dashboard shares its ASGI stack.
 """
+import asyncio
 import hashlib
 import json
 import pathlib
@@ -20,10 +21,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from starlette.applications import Starlette
+from starlette.requests import Request
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from src import dashboard, ledger, server, upstream
+from src import audit, dashboard, ledger, server, upstream
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 AGENT_TOKEN = "agent-token-not-a-real-secret"
@@ -345,13 +347,21 @@ def test_live_checkout_rejects_a_live_key_and_caller_controlled_amount(c, monkey
 def test_three_live_orders_per_browser_and_cross_browser_capture_is_refused(app, monkeypatch):
     _test_key(monkeypatch)
 
+    # A distinct id per call, because each checkout now really is a new order.
+    # One id for all three passed only while a fixed idempotency key made the
+    # second and third press of Buy replay the first order instead of buying.
+    placed = []
+
     async def fake(tool, args):
-        return ({"id": "order_onebrowser", "amount": 10000, "currency": "INR"}
-                if tool == "create_order" else {})
+        if tool != "create_order":
+            return {}
+        placed.append(args)
+        return {"id": f"order_onebrowser_{len(placed)}", "amount": 10000, "currency": "INR"}
 
     monkeypatch.setattr(server, "call_razorpay", fake)
     a, b = other(app), other(app)
     assert [a.post("/api/live-checkout/order", json={}).status_code for _ in range(3)] == [200] * 3
+    assert len(placed) == 3, "each checkout is its own order, not a replay of the first"
     assert a.post("/api/live-checkout/order", json={}).status_code == 429
     assert b.post("/api/live-checkout/capture", json={"payment_id": "pay_public123"}).status_code == 404
 
@@ -1131,12 +1141,25 @@ def test_the_scripted_basket_still_gets_five_through_and_one_refused(c):
     assert outcomes == ["ALLOW"] * 5 + ["BLOCK"]
 
 
-def test_a_body_that_is_not_an_object_is_ignored_rather_than_crashing(c):
-    for raw in [b"[]", b"null", b"not json", b"x" * (dashboard.MAX_BODY + 10)]:
-        r = c.post("/api/attack", content=raw,
-                   headers={"Content-Type": "application/json"})
-        assert r.status_code == 200
-        assert r.json()["decision"]["outcome"] == "BLOCK"
+@pytest.mark.parametrize("raw, status", [
+    pytest.param(b"[]", 400, id="json-array"),
+    pytest.param(b"null", 400, id="json-null"),
+    pytest.param(b"not json", 400, id="not-json"),
+    pytest.param(b"{", 400, id="truncated-object"),
+    pytest.param(b"x" * (dashboard.MAX_BODY + 10), 413, id="oversized"),
+])
+def test_a_body_the_server_cannot_read_is_refused_rather_than_treated_as_empty(c, raw, status):
+    """It must not crash, and it must not pass either. All of these collapsed
+    into the same empty object a valid `{}` produces, so on the checkout route
+    each one answered 200, consumed a slot and placed an order upstream."""
+    r = c.post("/api/attack", content=raw, headers={"Content-Type": "application/json"})
+    assert r.status_code == status
+
+
+def test_an_empty_body_is_still_a_valid_empty_object(c):
+    """The control. Refusing what cannot be read must not refuse what can."""
+    r = c.post("/api/attack", content=b"{}", headers={"Content-Type": "application/json"})
+    assert r.status_code == 200 and r.json()["decision"]["outcome"] == "BLOCK"
 
 
 def test_sql_metacharacters_in_a_receipt_do_not_reach_the_query(c):
@@ -1382,3 +1405,136 @@ def test_two_live_payments_racing_one_open_slot_leave_exactly_one_winner(app, c,
     finally:
         conn.close()
     assert [r["status"] for r in rows] == ["captured"], [dict(r) for r in rows]
+
+
+def test_a_supplied_feed_cursor_cannot_widen_the_read():
+    """`after` comes from the query string on a route that takes no token, and
+    the read was unbounded: after=0 pulled the whole shared audit file into
+    memory and parsed it, filtering by caller only afterwards."""
+    for n in range(100):
+        audit.record(event="probe", caller_id="someone_else", note="x" * 1900, n=n)
+    wide, cursor = dashboard.read_tail(0)
+    default, _ = dashboard.read_tail(None)
+    assert cursor <= dashboard.FEED_TAIL_BYTES
+    assert len(wide) == len(default) < 40
+
+
+def _ask_request(question="buy me a keyboard", token="visitor-token-not-a-real-one"):
+    """One POST /api/ask, built by hand so two can be queued behind the lock."""
+    body = json.dumps({"question": question}).encode()
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request({"type": "http", "method": "POST", "path": "/api/ask",
+                    "query_string": b"", "scheme": "https", "server": ("localhost", 443),
+                    "headers": [(b"cookie", f"rg_demo={token}".encode())]}, receive)
+
+
+def test_two_questions_queued_behind_the_lock_cannot_both_spend_the_last_budget(monkeypatch):
+    """Both counters were read before the lock and never re-read inside it, so
+    two questions from one visitor each passed a budget with room for one: both
+    ran live, the day ended at minus four calls, and the visitor counter read
+    three after four questions."""
+    conn = ledger.connect()
+    try:
+        dashboard.llm_budget(conn, spend=dashboard.LLM_DAILY_CALLS
+                             - dashboard.LLM_CALLS_PER_QUESTION)
+    finally:
+        conn.close()
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy-key-not-a-real-one")
+    monkeypatch.setattr(dashboard, "_LLM_ASKED",
+                        {"visitor-token-not-a-real-one": dashboard.LLM_QUESTIONS_PER_VISITOR - 1})
+
+    async def scenario():
+        lock = asyncio.Lock()
+        monkeypatch.setattr(dashboard, "_LLM_LOCK", lock)
+
+        async def throttle():
+            pass
+
+        async def ask(*_a):
+            await asyncio.sleep(0)
+            return [], "ok", dashboard.LLM_CALLS_PER_QUESTION
+
+        monkeypatch.setattr(dashboard, "_throttle", throttle)
+        monkeypatch.setattr(dashboard, "_ask_model", ask)
+        await lock.acquire()
+        tasks = [asyncio.create_task(dashboard.api_ask(_ask_request())) for _ in range(2)]
+        await asyncio.sleep(0)
+        lock.release()
+        return await asyncio.gather(*tasks)
+
+    replies = [json.loads(r.body) for r in asyncio.run(scenario())]
+    assert [r["live"] for r in replies] == [True, False]
+    conn = ledger.connect()
+    try:
+        assert dashboard.llm_budget(conn) == 0          # spent to the floor, never past it
+    finally:
+        conn.close()
+    assert dashboard._LLM_ASKED["visitor-token-not-a-real-one"] == \
+        dashboard.LLM_QUESTIONS_PER_VISITOR
+
+
+def test_one_question_inside_the_budget_still_runs_live(monkeypatch):
+    """The control. Serialising the check must not refuse a question there is
+    budget for."""
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy-key-not-a-real-one")
+    monkeypatch.setattr(dashboard, "_LLM_ASKED", {})
+
+    async def ask(*_a):
+        return [], "ok", dashboard.LLM_CALLS_PER_QUESTION
+
+    async def throttle():
+        pass
+
+    monkeypatch.setattr(dashboard, "_throttle", throttle)
+    monkeypatch.setattr(dashboard, "_ask_model", ask)
+    assert json.loads(asyncio.run(dashboard.api_ask(_ask_request())).body)["live"] is True
+
+
+def test_a_refusal_before_the_capture_is_sent_leaves_the_slot_retryable(app, monkeypatch):
+    """The slot moves to `capturing` before the payment is resolved, and there was
+    no way back: a transient failure resolving it answered 502, then 404 on the
+    retry, with the 100 still held and the checkout dead."""
+    _test_key(monkeypatch)
+    resolved = []
+
+    async def fake(tool, args):
+        if tool == "create_order":
+            return {"id": "order_retryable", "amount": 10000, "currency": "INR"}
+        if tool == "fetch_payment":
+            resolved.append(args)
+            if len(resolved) == 1:
+                raise upstream.UpstreamError("resolver unavailable", known=False)
+            return {"id": args["payment_id"], "order_id": "order_retryable",
+                    "amount": 10000, "currency": "INR", "status": "authorized"}
+        return {"id": args.get("payment_id"), "order_id": "order_retryable",
+                "amount": 10000, "currency": "INR", "status": "captured"}
+
+    monkeypatch.setattr(server, "call_razorpay", fake)
+    c = other(app)
+    assert c.post("/api/live-checkout/order", json={}).status_code == 200
+    first = c.post("/api/live-checkout/capture", json={"payment_id": "pay_retryable1"})
+    assert first.status_code == 502 and first.json()["retryable"] is True
+    assert c.post("/api/live-checkout/capture",
+                  json={"payment_id": "pay_retryable1"}).status_code == 200
+
+
+def test_a_failure_that_may_have_reached_razorpay_is_not_offered_as_retryable(app, monkeypatch):
+    """The control. Only a refusal taken before anything is sent may reopen the
+    slot; an unknown outcome must not invite a second capture."""
+    _test_key(monkeypatch)
+
+    async def fake(tool, args):
+        if tool == "create_order":
+            return {"id": "order_unknown_fail", "amount": 10000, "currency": "INR"}
+        raise RuntimeError("the connection dropped after the request went out")
+
+    monkeypatch.setattr(server, "call_razorpay", fake)
+    c = other(app)
+    assert c.post("/api/live-checkout/order", json={}).status_code == 200
+    r = c.post("/api/live-checkout/capture", json={"payment_id": "pay_unknownfail"})
+    assert r.status_code == 502 and "retryable" not in r.json()
+    assert c.post("/api/live-checkout/capture",
+                  json={"payment_id": "pay_unknownfail"}).status_code == 404

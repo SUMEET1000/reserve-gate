@@ -171,6 +171,11 @@ def score(cases: list[dict]) -> dict:
                              and not row["false_allow"])
         row["wrong_effect"] = (want.get("effect") is not None
                                and effect != want.get("effect"))
+        # A verdict that is neither the expected one nor a false allow or block -
+        # an expected BLOCK answered with a HOLD - set none of the flags above,
+        # so a wrong verdict was reported as a clean run.
+        row["wrong_outcome"] = (outcome != want["outcome"]
+                                and not row["false_allow"] and not row["false_block"])
         rows.append(row)
         by_id[case["id"]] = row
 
@@ -224,10 +229,13 @@ def report(res: dict, chain_ok: bool, chain_line, tail) -> str:
         "- Injection twins that diverged: " + str(len(tw)) + ". A payload that changed"
         " the decision would mean the gate read free text somewhere.",
         "- Audit chain over `harness/audit_run.jsonl`: " + chain + ".",
-        "- Chain tail digest: `" + str(tail) + "`. The chain is unkeyed, so it catches an"
-        " edited, deleted or reordered record but not a wholesale rewrite. This digest is"
-        " what closes that: it is committed here, in git, beside the log it summarises, so"
-        " a recomputed log no longer matches the value recorded next to it.", "",
+        "- Chain tail digest: `" + str(tail) + "`. The chain is unkeyed, so it catches a"
+        " record edited, reordered, or deleted from the middle - but not one deleted from"
+        " the end, and not a wholesale rewrite: both leave a file that verifies against"
+        " itself. This digest is what closes both, and it is what to check the log against:"
+        " it is committed here, in git, beside the log it summarises, so a truncated or"
+        " recomputed log no longer matches the value recorded next to it."
+        " `audit.verify(path, expected_tail=...)` performs that comparison.", "",
         "## Confusion matrix", "",
         "| expected \\ actual | " + " | ".join(VERDICTS) + " |",
         "|---|" + "---|" * len(VERDICTS)]
@@ -271,18 +279,21 @@ def main() -> int:
     wr = sum(r["wrong_rule"] for r in res["rows"])
     we = sum(r["wrong_effect"] for r in res["rows"])
     tw = sum(r["twin_diverged"] for r in res["rows"])
-    print("{n} cases | false-allow {a} | false-block {b} | wrong-rule {w}"
-          " | wrong-effect {e} | twins diverged {t} | chain {c}".format(
-              n=len(cases), a=fa, b=fb, w=wr, e=we, t=tw,
+    wo = sum(r["wrong_outcome"] for r in res["rows"])
+    print("{n} cases | false-allow {a} | false-block {b} | wrong-outcome {o}"
+          " | wrong-rule {w} | wrong-effect {e} | twins diverged {t} | chain {c}".format(
+              n=len(cases), a=fa, b=fb, o=wo, w=wr, e=we, t=tw,
               c="ok" if chain_ok else "BROKEN@" + str(chain_line)))
     for r in res["rows"]:
-        if r["false_allow"] or r["wrong_rule"] or r["wrong_effect"] or r["twin_diverged"]:
+        if (r["false_allow"] or r["wrong_outcome"] or r["wrong_rule"]
+                or r["wrong_effect"] or r["twin_diverged"]):
             print("  {i:<14} want {w} {wr:<8} got {g} {gr:<8} {n}".format(
                 i=r["id"], w=r["want"], wr=r["want_rule"] or "-",
                 g=r["got"], gr=r["got_rule"] or "-", n=r["note"]))
-    # The exit code and the printed line come from the same five counts, so they
-    # cannot disagree about whether the run passed.
-    return 0 if (fa == 0 and wr == 0 and we == 0 and tw == 0 and chain_ok) else 1
+    # The exit code and the printed line come from the same counts, so they
+    # cannot disagree about whether the run passed. False-block is reported and
+    # not gated on: it is the honest cost of the gate, not a correctness failure.
+    return 0 if (fa == 0 and wo == 0 and wr == 0 and we == 0 and tw == 0 and chain_ok) else 1
 
 
 if __name__ == "__main__":

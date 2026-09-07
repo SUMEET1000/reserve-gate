@@ -192,8 +192,9 @@ case("R2-capture-after", "block_cap_expiry", NPCI, capture("o_exp", 150000),
      "BLOCK", "R2", "the block expires before the capture lands", at=EXPIRES_DAYS * DAY + 1,
      setup=held(150000, "o_exp"))
 
-case("TTL-expired", "block_cap_expiry", NPCI, capture("o_ttl", 150000), "BLOCK", "R3",
-     "E2: an unpaid order returns its amount to the block after the TTL",
+case("TTL-passed-order-bound", "block_cap_expiry", NPCI, capture("o_ttl", 150000), "ALLOW", "",
+     "E2's TTL releases an attempt that never reached Razorpay, never a created"
+     " order: that one stays payable, so its hold stands and the capture settles it",
      at=TTL_MIN * 60, setup=held(150000, "o_ttl"))
 case("TTL-inside", "block_cap_expiry", NPCI, capture("o_ttl", 150000), "ALLOW", "",
      "one second inside the reservation TTL", at=TTL_MIN * 60 - 1,

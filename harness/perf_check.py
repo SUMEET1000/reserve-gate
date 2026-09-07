@@ -126,12 +126,16 @@ def measure_endpoints(base: str) -> list[tuple[str, float, int, bool]]:
     rows = []
     for method, path, body in PROBES:
         hit(base, method, path, body, cookie)          # warm the lru_caches
-        samples, status = [], 0
+        samples, seen = [], []
         for _ in range(REPEATS):
             ms, status, _ = hit(base, method, path, body, cookie)
             samples.append(ms)
+            seen.append(status)
         p95 = statistics.quantiles(samples, n=20)[-1]
-        rows.append((f"{method} {path}", p95, status, status < 400))
+        # The worst status of the run, not the last one. Overwriting it each
+        # repetition let eleven 500s followed by one 200 report PASS.
+        worst = max(seen)
+        rows.append((f"{method} {path}", p95, worst, all(s < 400 for s in seen)))
     return rows
 
 

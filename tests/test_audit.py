@@ -1,8 +1,11 @@
 """G11. The audit log is the artefact the judging bar asks for, so it has to be
 tamper-evident: a log anyone can edit in place proves nothing at all."""
+import builtins
 import json
+import subprocess
 import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -72,6 +75,43 @@ def test_the_chain_survives_a_restart(log, monkeypatch):
     audit.record(event="allow", tool="capture_payment")
     assert audit.verify(str(log)) == (True, None)
     assert len(lines(log)) == 6
+
+
+def test_a_second_process_appending_does_not_fork_the_chain(log):
+    """One configured path is shared by the stdio server, a `--live` buyer run and
+    the deployed process. Trusting a per-process tail gave two chains in one file
+    and verify() named line 3 of a log nobody had touched."""
+    subprocess.run([sys.executable, "-c",
+                    "from src import audit; audit.record(event='child')"],
+                   check=True, cwd=str(Path(__file__).resolve().parent.parent))
+    audit.record(event="allow", tool="create_order", amount=7000)
+    assert audit.verify(str(log)) == (True, None)
+    assert len(lines(log)) == 7
+
+
+def test_a_failed_write_does_not_poison_the_records_after_it(log):
+    """The tail used to advance before the append, so a full disk left the cache
+    pointing at a record no reader could see and every later record linked to it.
+    The chain stayed broken once the disk recovered."""
+    real_open = builtins.open
+
+    def full_disk(path, *a, **kw):
+        if str(path) == str(log) and "a" in (a[0] if a else kw.get("mode", "r")):
+            raise OSError(28, "No space left on device")
+        return real_open(path, *a, **kw)
+
+    # Restored by hand rather than with monkeypatch.undo(), which would also roll
+    # back the fixture's RESERVE_GATE_AUDIT and send the retry to another file.
+    builtins.open = full_disk
+    try:
+        with pytest.raises(OSError):
+            audit.record(event="allow", tool="create_order", amount=6000)
+    finally:
+        builtins.open = real_open
+
+    audit.record(event="allow", tool="create_order", amount=6000)
+    assert audit.verify(str(log)) == (True, None)
+    assert len(lines(log)) == 6                 # the failed one wrote nothing
 
 
 def test_an_unserialisable_record_still_chains(log):
@@ -191,3 +231,31 @@ def test_concurrent_records_do_not_fork_the_chain(tmp_path, monkeypatch):
         sys.setswitchinterval(before)
     assert len(lines(p)) == 200
     assert audit.verify(str(p)) == (True, None)
+
+
+def test_the_admin_credential_is_redacted_like_the_agents(log, monkeypatch):
+    """_live_secrets knew every credential except the one that releases a HOLD,
+    so an upstream reply or a receipt echoing it stored it verbatim in the log
+    the demo site publishes."""
+    monkeypatch.setenv("RESERVE_GATE_ADMIN_TOKEN", "admin-secret-not-a-real-one")
+    monkeypatch.setenv("RESERVE_GATE_TOKEN", "agent-secret-not-a-real-one")
+    rec = audit.record(event="allow", receipt="echo admin-secret-not-a-real-one"
+                                              " and agent-secret-not-a-real-one")
+    assert "admin-secret-not-a-real-one" not in json.dumps(rec)
+    assert "agent-secret-not-a-real-one" not in json.dumps(rec)
+    assert rec["receipt"].count(audit.REDACTED) == 2
+
+
+def test_records_deleted_from_the_end_are_caught_only_against_the_published_tail(log):
+    """A truncated log is a valid chain that stops early, so nothing inside the
+    file can see it. The digest committed to git is what can, and verify() has to
+    be given it: the report used to claim a deleted record was caught either way."""
+    published = audit.tail_hash(str(log))
+    rewrite(log, lines(log)[:3])
+    assert audit.verify(str(log)) == (True, None), "the chain alone cannot see this"
+    assert audit.verify(str(log), expected_tail=published) == (False, 4)
+
+
+def test_an_intact_log_still_passes_against_its_own_tail(log):
+    """The control. The comparison must reject a short log and accept a whole one."""
+    assert audit.verify(str(log), expected_tail=audit.tail_hash(str(log))) == (True, None)

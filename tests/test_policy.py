@@ -211,9 +211,11 @@ def test_capture_refuses_a_reservation_that_is_already_closed(state):
     assert d.outcome == BLOCK and d.rule == "R3", d
 
 
-def test_capture_refuses_after_the_reservation_ttl():
+def test_capture_is_decided_on_the_reservation_state_and_never_on_the_clock():
+    """A reservation is only reached by its order_id, so Razorpay created the
+    order and it stays chargeable. Refusing on elapsed time stranded the hold."""
     d = run(capture(), reservation=reservation(expires_at=NOW))
-    assert d.outcome == BLOCK and d.rule == "R3", d
+    assert d.outcome == ALLOW, d
 
 
 def test_capture_refuses_an_amount_that_is_not_the_reserved_one():

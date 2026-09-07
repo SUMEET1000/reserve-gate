@@ -26,13 +26,13 @@ from mcp.server.transport_security import TransportSecuritySettings
 from dotenv import load_dotenv
 
 from . import audit, dashboard, ledger
-from .policy import HOLD, Call, PolicyRefusal, load_config
+from .policy import BLOCK, HOLD, Call, Decision, PolicyRefusal, load_config
 from .upstream import UpstreamError, call_razorpay
 from .webhook import handle as handle_webhook
 
 # Paths the operator uses and the agent must never reach. Checked against
 # RESERVE_GATE_ADMIN_TOKEN, a different secret from the one the agent holds.
-ADMIN_PATHS = ("/approve/", "/revoke/", "/unfreeze/", "/block")
+ADMIN_PATHS = ("/approve/", "/revoke/", "/unfreeze/", "/reconcile/", "/block")
 
 # Routes that need no credential at all: the uptime check, Razorpay's webhook
 # (which authenticates by signature instead), and the read-only demo site.
@@ -40,13 +40,6 @@ ADMIN_PATHS = ("/approve/", "/revoke/", "/unfreeze/", "/block")
 # here. ADMIN_PATHS is consulted first and wins - a public list that accidentally
 # covered /approve would hand the operator's approval gate to the internet.
 OPEN_PATHS = frozenset({"/health", "/webhook"}) | dashboard.PUBLIC_PATHS
-
-# call_id -> (tool, upstream args, Ref). A HOLD parks here until POST /approve.
-# ponytail: in memory, so a restart forgets the pending approvals. The hold
-# itself is a row in SQLite and its TTL returns it to the block either way
-# (B33), so a restart costs an approval, never a lost or leaked balance.
-_HOLDS: dict[str, tuple[str, dict, ledger.Ref]] = {}
-
 
 def _allowed_hosts() -> list[str]:
     """Host values this server will answer to.
@@ -119,10 +112,11 @@ async def _settle(conn, tool: str, ref: ledger.Ref, args: dict) -> Any:
             # releasing that one would let the webhook settle money twice.
             ledger.release(conn, ref, reason=dead)
         raise ValueError(f"BLOCK {dead} before the call was forwarded")
-    if tool == "capture_payment":
-        # Persist before the network call: a process death after Razorpay acts
-        # must not let the ordinary reservation TTL return possibly-spent money.
-        ledger.mark_capture_pending(conn, ref)
+    # Persist before the network call: a process death after Razorpay acts must not
+    # let the ordinary reservation TTL return money that may be owed. An order gets
+    # the same mark as a capture, because an order Razorpay created is chargeable
+    # even when its reply is lost, and settle_order clears the mark when it binds.
+    ledger.mark_outcome_pending(conn, ref)
     try:
         result = await call_razorpay(tool, args)
     except UpstreamError as e:
@@ -134,10 +128,10 @@ async def _settle(conn, tool: str, ref: ledger.Ref, args: dict) -> Any:
             ledger.release(conn, ref, reason=str(e))
         else:
             # G14 / B25b. A timeout says nothing about whether Razorpay acted.
-            # A capture was marked outcome_unknown above, so its hold survives
-            # the TTL and waits for reconciliation. An order's hold is not
-            # marked and expires normally by design: an order Razorpay may or
-            # may not have created is not money moved until it is captured.
+            # Both tools were marked outcome_unknown above, so the hold survives
+            # the TTL and waits for reconciliation. An order used to expire here
+            # on the reasoning that an uncaptured order is not money moved; it is
+            # a chargeable liability, and letting it expire freed the budget again.
             #
             # A capture reaches here however the error arrived, because no error
             # text proves a capture did not happen and "already captured" proves
@@ -149,7 +143,10 @@ async def _settle(conn, tool: str, ref: ledger.Ref, args: dict) -> Any:
         raise ValueError(f"{tool} failed upstream: {e}") from None
 
     if tool == "create_order":
-        ledger.settle_order(conn, ref, order_id=result["id"], result=result)
+        if ledger.settle_order(conn, ref, order_id=result["id"], result=result) == "refused":
+            raise ValueError("order refused: the reply does not state the amount and"
+                             " currency that were authorised, and the block is frozen"
+                             " for review")
     elif ledger.settle_capture(conn, ref, result=result) == "refused":
         # The ledger froze the block or declined the debit. Returning Razorpay's
         # payload here would tell the client the money moved as asked.
@@ -170,7 +167,7 @@ async def _gated(call: Call, args: dict, cfg=None) -> Any:
             conn, call, cfg, receipt=args.get("receipt"), idempotency_args=args)
 
         if decision.outcome == HOLD:
-            _HOLDS[ref.reservation_id] = (call.tool, args, ref)
+            ledger.park_hold(conn, ref, call.tool, args)
             raise _refusal(replace(decision,
                                    detail={**decision.detail, "call_id": ref.reservation_id}))
         if not decision.allowed:
@@ -237,7 +234,17 @@ async def _capture_for(caller: str, payment_id: str, *, amount: int | None = Non
                        cfg=None, expected_order_id: str | None = None) -> Any:
     """Resolve a payment at Razorpay, then capture it through the shared gate."""
     if not isinstance(payment_id, str) or not re.fullmatch(r"pay_[A-Za-z0-9]{1,64}", payment_id):
-        raise ValueError("BLOCK [G4] malformed payment id")
+        raise _refusal(Decision(BLOCK, "G4", "malformed payment id"))
+    if idempotency_key:
+        conn = ledger.connect()
+        try:
+            done = ledger.completed_capture(conn, caller, idempotency_key, payment_id)
+        finally:
+            conn.close()
+        if done is not None:
+            audit.record(event="capture_duplicate", tool="capture_payment",
+                         payment_id=payment_id, source="replay_before_upstream")
+            return done
     try:
         payment = await call_razorpay("fetch_payment", {"payment_id": payment_id})
         order_id = payment["order_id"]
@@ -245,17 +252,20 @@ async def _capture_for(caller: str, payment_id: str, *, amount: int | None = Non
     except (UpstreamError, KeyError, TypeError) as e:
         audit.record(event="block", rule="G4", tool="capture_payment",
                      reason=f"could not resolve the order for {payment_id}: {e}")
-        raise ValueError(f"BLOCK [G4] cannot resolve the order for {payment_id}: {e}") from None
+        raise _refusal(Decision(BLOCK, "G4",
+                                f"cannot resolve the order for {payment_id}: {e}")) from None
     if (expected_order_id is not None and order_id != expected_order_id):
         audit.record(event="block", rule="G2", tool="capture_payment",
                      reason="payment does not belong to this visitor's live order")
-        raise ValueError("BLOCK [G2] payment does not belong to this checkout")
+        raise _refusal(Decision(BLOCK, "G2",
+                                "payment does not belong to this checkout"))
     if (type(upstream_amount) is not int or not isinstance(upstream_currency, str)
             or (amount is not None and upstream_amount != amount)
             or (currency is not None and upstream_currency.upper() != currency.upper())):
         audit.record(event="block", rule="R0", tool="capture_payment", payment_id=payment_id,
                      reason="capture arguments do not match Razorpay's payment object")
-        raise ValueError("BLOCK [R0] capture amount or currency does not match the payment")
+        raise _refusal(Decision(BLOCK, "R0",
+                                "capture amount or currency does not match the payment"))
     call = Call(tool="capture_payment", caller_id=caller, amount=upstream_amount,
                 currency=upstream_currency, order_id=order_id, payment_id=payment_id,
                 idem_key=idempotency_key)
@@ -272,18 +282,18 @@ def live_checkout_available() -> tuple[bool, str]:
     return True, ""
 
 
-async def live_checkout_order(caller: str, cfg) -> dict:
+async def live_checkout_order(caller: str, cfg, slot: int) -> dict:
     amount = 10_000
     args = {"amount": amount, "currency": "INR", "receipt": "reserve-gate-demo-100"}
     call = Call(tool="create_order", caller_id=caller, amount=amount, currency="INR",
-                idem_key=ledger.LIVE_CHECKOUT_IDEM_KEYS[0])
+                idem_key=ledger.live_checkout_key(0, slot))
     return await _gated(call, args, cfg)
 
 
 async def live_checkout_capture(caller: str, cfg, payment_id: str,
-                                order_id: str) -> dict:
+                                order_id: str, slot: int) -> dict:
     return await _capture_for(caller, payment_id, cfg=cfg, expected_order_id=order_id,
-                              idempotency_key=ledger.LIVE_CHECKOUT_IDEM_KEYS[1])
+                              idempotency_key=ledger.live_checkout_key(1, slot))
 
 
 def _owned(order_id: str | None) -> bool:
@@ -378,18 +388,42 @@ async def unfreeze(request):
     return JSONResponse({"block_id": block_id, "unfrozen": changed})
 
 
+@mcp.custom_route("/reconcile/{reservation_id}", ["POST"])
+async def reconcile(request):
+    """Close out a hold whose upstream outcome only a person can establish.
+
+    Admin-only, like /revoke and /unfreeze: the agent must never be able to
+    declare its own stuck capture a failure and get the budget back."""
+    outcome = request.query_params.get("outcome", "")
+    if outcome not in ("captured", "not_captured"):
+        return JSONResponse({"error": "outcome must be 'captured' or 'not_captured',"
+                             " and only after checking the payment at Razorpay"}, 400)
+    conn = ledger.connect()
+    try:
+        done = ledger.reconcile_reservation(conn, request.path_params["reservation_id"],
+                                            outcome=outcome)
+    finally:
+        conn.close()
+    if done is None:
+        return JSONResponse({"error": "reservation not found"}, 404)
+    return JSONResponse({"reservation_id": request.path_params["reservation_id"],
+                         "outcome": done})
+
+
 @mcp.custom_route("/approve/{call_id}", ["POST"])
 async def approve(request):
     """Release one HOLD, and only ever once: the pending call is popped, so a
     replayed or forged approval finds nothing to approve (B14)."""
     call_id = request.path_params["call_id"]
-    pending = _HOLDS.pop(call_id, None)
-    if pending is None:
-        return JSONResponse({"error": "no call is waiting for approval under that id"}, 404)
-    tool, args, ref = pending
-    audit.record(event="hold_approved", call_id=call_id, tool=tool)
     conn = ledger.connect()
     try:
+        # Claimed from SQLite, not from process memory: the hold survives a restart
+        # and a second worker, so the approval that releases it has to as well.
+        pending = ledger.take_hold(conn, call_id)
+        if pending is None:
+            return JSONResponse({"error": "no call is waiting for approval under that id"}, 404)
+        tool, args, ref = pending
+        audit.record(event="hold_approved", call_id=call_id, tool=tool)
         if not ledger.renew_hold(conn, ref, config().reservation_ttl_minutes):
             return JSONResponse({"error": "this hold is no longer approvable: it expired,"
                                  " or its block was revoked, expired or frozen"}, 410)

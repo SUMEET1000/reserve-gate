@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS reservations (
   expires_at TEXT NOT NULL,
   settled_at TEXT,
   payment_id TEXT,
-  outcome_unknown INTEGER NOT NULL DEFAULT 0 CHECK (outcome_unknown IN (0, 1))
+  outcome_unknown INTEGER NOT NULL DEFAULT 0 CHECK (outcome_unknown IN (0, 1)),
+  pending_call TEXT
 );
 
 CREATE TABLE IF NOT EXISTS idempotency (
@@ -114,6 +115,8 @@ MIGRATIONS = (
      "ALTER TABLE reservations ADD COLUMN outcome_unknown INTEGER NOT NULL DEFAULT 0"),
     ("reservation_id", "PRAGMA table_info(idempotency)",
      "ALTER TABLE idempotency ADD COLUMN reservation_id TEXT"),
+    ("pending_call", "PRAGMA table_info(reservations)",
+     "ALTER TABLE reservations ADD COLUMN pending_call TEXT"),
 )
 
 
@@ -162,7 +165,15 @@ def caller_id_for(token: str) -> str:
 # which is why the demo surface keys off these rather than off
 # live_checkout_slots.order_id, a column set by a later UPDATE that a failure
 # path can skip.
+# Prefixes, not keys. Each checkout appends its own slot id: a fixed pair was one
+# key per caller for the life of the block, so a visitor's second checkout replayed
+# the first order instead of buying anything, and after payment it replayed an order
+# that was already paid. The trace page matches on the prefix.
 LIVE_CHECKOUT_IDEM_KEYS = ("public-live-checkout-100", "public-live-capture-100")
+
+
+def live_checkout_key(which: int, slot: int) -> str:
+    return f"{LIVE_CHECKOUT_IDEM_KEYS[which]}-{slot}"
 
 
 def args_hash(call: Call, idempotency_args: dict | None = None) -> str:
@@ -283,15 +294,23 @@ def snapshot(conn: sqlite3.Connection, caller_id: str) -> Block | None:
 def _expire_stale(conn: sqlite3.Connection, now: datetime) -> None:
     """Housekeeping that has to run before the balance is read.
 
-    E2: an order that was never paid returns its amount to the block, so ten
-    abandoned orders do not consume a block that spent nothing.
+    E2: a reservation that never became an upstream order returns its amount to
+    the block, so ten abandoned attempts do not consume a block that spent nothing.
+
+    A bound `order_id` is the line between the two, and it is why this only
+    releases unbound rows. Razorpay has no cancel-order call and an order it has
+    created stays payable indefinitely, so releasing one hands its amount back
+    for a liability that still exists: six 200000 orders taken 16 minutes apart
+    against a 1000000 block issued 1200000 of payable exposure, and a later
+    confirmed capture then froze the block instead of recording the spend.
 
     R7: a derived key that is past its five minutes is deleted rather than left
     to sit. Ignoring it on lookup is not enough — the row still holds the primary
     key, so the retry that should now be a fresh call collides on INSERT instead.
     """
     for r in conn.execute("SELECT reservation_id, block_id, amount FROM reservations"
-                          " WHERE state = 'held' AND outcome_unknown = 0 AND expires_at <= ?",
+                          " WHERE state = 'held' AND outcome_unknown = 0"
+                          " AND order_id IS NULL AND expires_at <= ?",
                           (iso(now),)).fetchall():
         conn.execute("UPDATE reservations SET state = 'released', settled_at = ?"
                      " WHERE reservation_id = ?", (iso(now), r["reservation_id"]))
@@ -299,7 +318,12 @@ def _expire_stale(conn: sqlite3.Connection, now: datetime) -> None:
                      (r["amount"], r["block_id"]))
         audit.record(event="reservation_expired", reservation_id=r["reservation_id"],
                      amount=r["amount"], block_id=r["block_id"])
-    conn.execute("DELETE FROM idempotency WHERE expires_at IS NOT NULL AND expires_at <= ?",
+    # A derived key whose own call is still unresolved keeps its identity past the
+    # five minutes. Deleting it let the retry of a create that never answered mint
+    # a fresh key at +301s, so one logical order became two holds against one block.
+    conn.execute("DELETE FROM idempotency WHERE expires_at IS NOT NULL AND expires_at <= ?"
+                 " AND (result IS NOT NULL OR reservation_id IS NULL OR reservation_id NOT IN"
+                 " (SELECT reservation_id FROM reservations WHERE state = 'held'))",
                  (iso(now),))
 
 
@@ -363,9 +387,15 @@ def state_for(conn: sqlite3.Connection, call: Call, config: Config, *,
 def _load_state(conn: sqlite3.Connection, call: Call, key: str, now: datetime,
                 velocity: int, bound_hash: str) -> State:
     block = snapshot(conn, call.caller_id)
+    # A derived key expires after five minutes so two deliberate purchases of the
+    # same item are two orders. A key whose own call never resolved is the
+    # exception: it stays live past that, or the retry of a create_order that
+    # never answered reads as a fresh call and places the order a second time.
     row = conn.execute(
         "SELECT args_hash, result FROM idempotency"
-        " WHERE caller_id = ? AND key = ? AND (expires_at IS NULL OR expires_at > ?)",
+        " WHERE caller_id = ? AND key = ? AND (expires_at IS NULL OR expires_at > ?"
+        "  OR (result IS NULL AND reservation_id IN"
+        "      (SELECT reservation_id FROM reservations WHERE state = 'held')))",
         (call.caller_id, key, iso(now))).fetchone()
     conflict = bool(row) and row["args_hash"] != bound_hash
     replay = json.loads(row["result"]) if row and not conflict and row["result"] else None
@@ -385,7 +415,8 @@ def _load_state(conn: sqlite3.Connection, call: Call, key: str, now: datetime,
             reservation = Reservation(reservation_id=r["reservation_id"], block_id=r["block_id"],
                                       amount=r["amount"], currency=r["currency"],
                                       state=r["state"], expires_at=parse(r["expires_at"]),
-                                      order_id=r["order_id"], payment_id=r["payment_id"])
+                                      order_id=r["order_id"], payment_id=r["payment_id"],
+                                      attempt_pending=bool(r["outcome_unknown"]))
     return State(block=block, velocity_count=velocity, replay=replay,
                  in_flight=in_flight, conflict=conflict, reservation=reservation)
 
@@ -513,13 +544,43 @@ def owns_order(conn: sqlite3.Connection, caller_id: str, order_id: str) -> bool:
         (order_id, caller_id)).fetchone() is not None
 
 
-def settle_order(conn: sqlite3.Connection, ref: Ref, *, order_id: str, result: dict) -> None:
+def settle_order(conn: sqlite3.Connection, ref: Ref, *, order_id: str, result: dict,
+                 now: datetime | None = None) -> str:
     """Upstream created the order. Bind Razorpay's id to the hold already taken,
-    and store the reply so a replay of this key returns it (R7)."""
+    and store the reply so a replay of this key returns it (R7).
+
+    Returns "committed", or "refused" when the reply states money that is not the
+    money authorised. The capture path has checked its reply since E20 and this
+    one checked nothing, so an order returned as 900000 against a 100 hold was
+    handed back as success. The same convention applies: an absent field makes no
+    claim, a stated disagreement freezes the block for review.
+    """
+    now = now or now_utc()
     conn.execute("BEGIN IMMEDIATE")
     try:
-        conn.execute("UPDATE reservations SET order_id = ? WHERE reservation_id = ?"
-                     " AND state = 'held'", (order_id, ref.reservation_id))
+        r = conn.execute("SELECT block_id, amount, currency FROM reservations"
+                         " WHERE reservation_id = ?", (ref.reservation_id,)).fetchone()
+        mismatch = ("order response amount mismatch"
+                    if r and result.get("amount") is not None
+                    and (type(result["amount"]) is not int
+                         or result["amount"] != r["amount"]) else
+                    "order response currency mismatch"
+                    if r and result.get("currency") is not None
+                    and (not isinstance(result["currency"], str)
+                         or result["currency"].upper() != r["currency"].upper()) else None)
+        if mismatch:
+            conn.execute("UPDATE blocks SET frozen_at = ?, freeze_reason = ?"
+                         " WHERE block_id = ? AND frozen_at IS NULL",
+                         (iso(now), mismatch, r["block_id"]))
+            conn.execute("COMMIT")
+            audit.record(event="block_frozen", reservation_id=ref.reservation_id,
+                         block_id=r["block_id"], order_id=order_id, reason=mismatch)
+            return "refused"
+        # Clearing the pending marker here is what makes the pre-call mark safe:
+        # the reply arrived, so the bound order_id now carries the hold instead.
+        conn.execute("UPDATE reservations SET order_id = ?, outcome_unknown = 0"
+                     " WHERE reservation_id = ? AND state = 'held'",
+                     (order_id, ref.reservation_id))
         conn.execute("UPDATE idempotency SET result = ? WHERE caller_id = ? AND key = ?",
                      (json.dumps(result), ref.caller_id, ref.key))
         conn.execute("COMMIT")
@@ -527,6 +588,64 @@ def settle_order(conn: sqlite3.Connection, ref: Ref, *, order_id: str, result: d
         conn.execute("ROLLBACK")
         raise
     audit.record(event="reservation_bound", reservation_id=ref.reservation_id, order_id=order_id)
+    return "committed"
+
+
+def completed_capture(conn: sqlite3.Connection, caller_id: str, key: str,
+                      payment_id: str) -> dict | None:
+    """The stored reply for a capture this caller already completed under `key`.
+
+    Read before the payment is resolved upstream, so a retry after a lost reply
+    still answers during an outage. Resolving first made the recovery path the
+    one that needed Razorpay most and trusted it least: the retry returned
+    BLOCK G4 instead of the success it had already been given.
+
+    Matched on the stored payment id as well as the key, so a key cannot be
+    pointed at a different payment to harvest an unrelated result (G16).
+    """
+    row = conn.execute("SELECT result FROM idempotency WHERE caller_id = ? AND key = ?"
+                       " AND tool = 'capture_payment' AND result IS NOT NULL",
+                       (caller_id, key)).fetchone()
+    if row is None:
+        return None
+    stored = json.loads(row["result"])
+    return stored if isinstance(stored, dict) and stored.get("id") == payment_id else None
+
+
+def park_hold(conn: sqlite3.Connection, ref: Ref, tool: str, args: dict) -> None:
+    """Remember what a HOLD would forward, beside the hold itself.
+
+    The pending call used to live only in a dict in the serving process, so a
+    restart or a second worker answered `POST /approve` with 404 while the money
+    stayed reserved in SQLite. The row already survives both; its arguments now
+    do too."""
+    conn.execute("UPDATE reservations SET pending_call = ? WHERE reservation_id = ?",
+                 (json.dumps({"tool": tool, "args": args}), ref.reservation_id))
+    conn.commit()
+
+
+def take_hold(conn: sqlite3.Connection, reservation_id: str) -> tuple[str, dict, Ref] | None:
+    """Claim a parked HOLD exactly once. B14: a replayed or forged approval finds
+    nothing, because the row is cleared in the same transaction that reads it."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        r = conn.execute("SELECT r.pending_call, r.order_id, b.caller_id, i.key"
+                         " FROM reservations r JOIN blocks b ON b.block_id = r.block_id"
+                         " LEFT JOIN idempotency i ON i.reservation_id = r.reservation_id"
+                         " WHERE r.reservation_id = ? AND r.pending_call IS NOT NULL",
+                         (reservation_id,)).fetchone()
+        if r is None:
+            conn.execute("COMMIT")
+            return None
+        conn.execute("UPDATE reservations SET pending_call = NULL WHERE reservation_id = ?",
+                     (reservation_id,))
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    parked = json.loads(r["pending_call"])
+    return parked["tool"], parked["args"], Ref(reservation_id=reservation_id,
+                                               caller_id=r["caller_id"], key=r["key"])
 
 
 def block_not_live(conn: sqlite3.Connection, ref: Ref, *,
@@ -578,8 +697,13 @@ def release(conn: sqlite3.Connection, ref: Ref, *, reason: str,
     audit.record(event="reservation_released", reservation_id=ref.reservation_id, reason=reason)
 
 
-def mark_capture_pending(conn: sqlite3.Connection, ref: Ref) -> None:
-    """Keep this hold until a verified capture outcome reconciles it."""
+def mark_outcome_pending(conn: sqlite3.Connection, ref: Ref) -> None:
+    """Keep this hold until a verified upstream outcome reconciles it.
+
+    Set before the network call for an order as well as a capture. An order
+    Razorpay created is chargeable whether or not its reply arrived, so a lost
+    reply must not leave the hold to expire: that is the same exposure the bound
+    order_id check in `_expire_stale` closes, reached by the other route."""
     conn.execute("BEGIN IMMEDIATE")
     try:
         cur = conn.execute("UPDATE reservations SET outcome_unknown = 1"
@@ -637,8 +761,8 @@ def settle_capture(conn: sqlite3.Connection, ref: Ref, *, result: dict,
     now = now or now_utc()
     conn.execute("BEGIN IMMEDIATE")
     try:
-        r = conn.execute("SELECT block_id, amount, currency, state, payment_id FROM"
-                         " reservations WHERE reservation_id = ?",
+        r = conn.execute("SELECT block_id, amount, currency, state, payment_id, order_id"
+                         " FROM reservations WHERE reservation_id = ?",
                          (ref.reservation_id,)).fetchone()
         payment_id = result.get("id")
         if not isinstance(payment_id, str) or not payment_id.strip():
@@ -698,6 +822,9 @@ def settle_capture(conn: sqlite3.Connection, ref: Ref, *, result: dict,
         # and freezes, the way the webhook path already treats the same one.
         mismatch = ("capture response payment mismatch"
                     if r["payment_id"] is not None and r["payment_id"] != payment_id else
+                    "capture response order mismatch"
+                    if result.get("order_id") is not None
+                    and result["order_id"] != r["order_id"] else
                     "capture response amount mismatch"
                     if result.get("amount") is not None
                     and (type(result["amount"]) is not int
@@ -806,8 +933,17 @@ def reconcile_webhook(conn: sqlite3.Connection, event_id: str, event_type: str,
                                      " AND tool = 'capture_payment' AND result IS NULL",
                                      (json.dumps(result), r["reservation_id"]))
                         effect, reason = "APPLY", "capture_applied"
-        conn.execute("UPDATE webhook_events SET effect = ?, reason = ? WHERE event_id = ?",
-                     (effect, reason, event_id))
+        if reason == "unknown_order":
+            # Razorpay's capture webhook can beat our own create_order reply back,
+            # so the order id is not bound yet and this event is early rather than
+            # foreign. Keeping the dedupe row made the redelivery a duplicate and
+            # the capture was dropped for good: the payment happened and `spent`
+            # stayed 0. Dropping the row lets the retry reconcile it. There is
+            # nothing to apply twice here, because no reservation was found.
+            conn.execute("DELETE FROM webhook_events WHERE event_id = ?", (event_id,))
+        else:
+            conn.execute("UPDATE webhook_events SET effect = ?, reason = ? WHERE event_id = ?",
+                         (effect, reason, event_id))
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
@@ -837,6 +973,56 @@ def revoke(conn: sqlite3.Connection, block_id: str, *, now: datetime | None = No
         raise
     audit.record(event="block_revoked", block_id=block_id, changed=changed)
     return changed
+
+
+def reconcile_reservation(conn: sqlite3.Connection, reservation_id: str,
+                          *, outcome: str, now: datetime | None = None) -> str | None:
+    """An operator who has checked Razorpay says what happened to a held attempt.
+
+    G14 keeps a hold whose outcome is unknown, and no error text can clear it:
+    "already captured" proves a capture happened and a timeout proves nothing, so
+    releasing on either handed back money that had moved. That leaves a definite
+    failure holding budget with nothing able to free it. This is the way out, and
+    it is deliberately manual and admin-only - the operator supplies the fact the
+    service cannot obtain.
+
+    `outcome` is "not_captured" to return the amount to the block, or "captured"
+    to book it as spent. Unknown reservations return None; one that is no longer
+    held returns "already_settled".
+    """
+    if outcome not in ("captured", "not_captured"):
+        raise ValueError("outcome must be 'captured' or 'not_captured'")
+    now = now or now_utc()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        r = conn.execute("SELECT block_id, amount, state FROM reservations"
+                         " WHERE reservation_id = ?", (reservation_id,)).fetchone()
+        if r is None:
+            conn.execute("COMMIT")
+            return None
+        if r["state"] != "held":
+            conn.execute("COMMIT")
+            return "already_settled"
+        if outcome == "captured":
+            conn.execute("UPDATE reservations SET state = 'committed', settled_at = ?,"
+                         " outcome_unknown = 0 WHERE reservation_id = ?",
+                         (iso(now), reservation_id))
+            conn.execute("UPDATE blocks SET held = held - ?, spent = spent + ?"
+                         " WHERE block_id = ?", (r["amount"], r["amount"], r["block_id"]))
+        else:
+            conn.execute("UPDATE reservations SET state = 'released', settled_at = ?,"
+                         " outcome_unknown = 0 WHERE reservation_id = ?",
+                         (iso(now), reservation_id))
+            conn.execute("UPDATE blocks SET held = held - ? WHERE block_id = ?",
+                         (r["amount"], r["block_id"]))
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    audit.record(event="reservation_reconciled", reservation_id=reservation_id,
+                 block_id=r["block_id"], amount=r["amount"], outcome=outcome,
+                 note="an operator supplied the upstream outcome")
+    return outcome
 
 
 def unfreeze(conn: sqlite3.Connection, block_id: str) -> bool | None:

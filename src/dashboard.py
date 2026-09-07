@@ -37,6 +37,7 @@ import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 
+from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse, PlainTextResponse, Response
 
 from . import audit, ledger, webhook
@@ -416,7 +417,7 @@ async def api_live_order(request):
         return live_reply({"error": reason, "recorded_proof": True},
                           token, demo_token, request, 429)
     try:
-        order = await _LIVE_ORDER(caller, cfg)
+        order = await _LIVE_ORDER(caller, cfg, slot)
         order_id = order["id"]
         if not isinstance(order_id, str) or not order_id.startswith("order_"):
             raise ValueError("Razorpay returned an invalid order")
@@ -510,8 +511,23 @@ async def api_live_capture(request):
                           token, demo_token, request, 404)
     try:
         result = await _LIVE_CAPTURE(row["caller_id"], config_of(demo_token),
-                                     payment_id, row["order_id"])
+                                     payment_id, row["order_id"], row["id"])
+    except PolicyRefusal:
+        # A refusal is taken before anything is sent, so this attempt is safe to
+        # make again. Leaving the slot on `capturing` made the retry of a
+        # transient pre-capture failure answer 404 while the 100 stayed held.
+        conn = ledger.connect()
+        try:
+            conn.execute("UPDATE live_checkout_slots SET status = 'created'"
+                         " WHERE id = ? AND status = 'capturing'", (row["id"],))
+        finally:
+            conn.close()
+        return live_reply({"error": "The payment could not be safely captured",
+                           "recorded_proof": True, "retryable": True},
+                          token, demo_token, request, 502)
     except Exception:
+        # Anything else may have reached Razorpay, so the slot stays `capturing`
+        # rather than inviting a second capture of a payment that may have gone.
         return live_reply({"error": "The payment could not be safely captured",
                            "recorded_proof": True}, token, demo_token, request, 502)
     conn = ledger.connect()
@@ -526,14 +542,27 @@ async def api_live_capture(request):
 
 
 async def body_of(request) -> dict:
+    """The request's JSON object, or a refusal.
+
+    Malformed JSON, a non-object and an oversized body used to collapse into the
+    same empty dict a valid `{}` produces, so `{`, `[]` and 64001 bytes each
+    reached /api/live-checkout/order as a well-formed request: HTTP 200, a
+    checkout slot consumed, and an order placed upstream. A body the server
+    cannot read is not an empty one.
+    """
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_BODY:
+        raise HTTPException(413, "request body too large")
     raw = await request.body()
     if len(raw) > MAX_BODY:
-        return {}
+        raise HTTPException(413, "request body too large")
     try:
         parsed = json.loads(raw or b"{}")
     except ValueError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+        raise HTTPException(400, "request body is not valid JSON") from None
+    if not isinstance(parsed, dict):
+        raise HTTPException(400, "request body must be a JSON object")
+    return parsed
 
 
 # --------------------------------------------------------------- the feed
@@ -557,7 +586,10 @@ def read_tail(offset: int | None) -> tuple[list[dict], int]:
     try:
         with open(p, "rb") as f:
             f.seek(offset)
-            chunk = f.read()
+            # Bounded by the same window the offset-less path uses. Reading to EOF
+            # let `after=0` pull the whole audit file into memory on a route that
+            # takes no token, and the caller filter runs only after the parse.
+            chunk = f.read(FEED_TAIL_BYTES)
     except OSError:
         return [], offset
     head, sep, _partial = chunk.rpartition(b"\n")
@@ -983,10 +1015,11 @@ async def api_webhook_replay(request):
             " WHERE b.caller_id = ? AND r.state = 'held' AND r.order_id IS NOT NULL"
             " AND r.reservation_id NOT IN ("
             "   SELECT reservation_id FROM idempotency"
-            "    WHERE caller_id = ? AND reservation_id IS NOT NULL AND key IN (%s))"
+            "    WHERE caller_id = ? AND reservation_id IS NOT NULL AND (%s))"
             " ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1"
-            % ",".join("?" * len(ledger.LIVE_CHECKOUT_IDEM_KEYS)),
-            (caller, caller, *ledger.LIVE_CHECKOUT_IDEM_KEYS)).fetchone()
+            % " OR ".join("key LIKE ?" for _ in ledger.LIVE_CHECKOUT_IDEM_KEYS),
+            (caller, caller,
+             *(k + "%" for k in ledger.LIVE_CHECKOUT_IDEM_KEYS))).fetchone()
         if r is None:
             return reply({"error": "buy something first - a webhook settles an order the"
                           " block is already holding"}, token, request, 409)
@@ -1343,23 +1376,28 @@ async def api_ask(request):
     if not isinstance(question, str) or not question.strip():
         return reply({"error": "ask something"}, token, request, 400)
 
-    conn = ledger.connect()
-    try:
-        left = llm_budget(conn)
-    finally:
-        conn.close()
-    asked = _LLM_ASKED.get(token, 0)
-    why = None
-    if asked >= LLM_QUESTIONS_PER_VISITOR:
-        why = "you have used your three questions"
-    elif left < LLM_CALLS_PER_QUESTION:
-        why = "today's model budget is spent"
-    elif not os.environ.get("GEMINI_API_KEY"):
-        why = "no model key is configured on this host"
-    if why:
-        return reply({"live": False, "reason": why, **recorded_run()}, token, request)
-
+    # Every read of the two counters, both decisions and both increments happen
+    # inside the lock. Checking first and locking afterwards let two questions
+    # queued by one visitor each pass a budget that only had room for one: both
+    # ran live, the day ended at minus four calls, and the visitor counter said
+    # three after four questions.
     async with _LLM_LOCK:
+        conn = ledger.connect()
+        try:
+            left = llm_budget(conn)
+        finally:
+            conn.close()
+        asked = _LLM_ASKED.get(token, 0)
+        why = None
+        if asked >= LLM_QUESTIONS_PER_VISITOR:
+            why = "you have used your three questions"
+        elif left < LLM_CALLS_PER_QUESTION:
+            why = "today's model budget is spent"
+        elif not os.environ.get("GEMINI_API_KEY"):
+            why = "no model key is configured on this host"
+        if why:
+            return reply({"live": False, "reason": why, **recorded_run()}, token, request)
+
         await _throttle()
         try:
             turns, answer, used = await _ask_model(question[:500], token)
@@ -1368,12 +1406,12 @@ async def api_ask(request):
             return reply({"live": False, "reason": "the model call failed, so this is the"
                           " recorded run", **recorded_run()}, token, request)
 
-    _LLM_ASKED[token] = asked + 1
-    conn = ledger.connect()
-    try:
-        llm_budget(conn, spend=used)
-    finally:
-        conn.close()
+        _LLM_ASKED[token] = asked + 1
+        conn = ledger.connect()
+        try:
+            llm_budget(conn, spend=used)
+        finally:
+            conn.close()
     return reply({"live": True, "model": LLM_MODEL, "question": question[:500],
                   "turns": turns, "answer": answer,
                   "questions_left": LLM_QUESTIONS_PER_VISITOR - asked - 1}, token, request)

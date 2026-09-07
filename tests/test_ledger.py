@@ -1,4 +1,5 @@
 """The ledger under real SQLite, including the race the whole project exists to stop."""
+from dataclasses import replace
 import sqlite3
 import threading
 import time
@@ -172,10 +173,9 @@ def test_one_purchase_debits_the_block_exactly_once(conn):
     assert balance(conn) == (50000, 0, 950000)      # held became spent, once
 
 
-def test_an_unpaid_order_returns_its_amount_to_the_block(conn):
-    """E2's TTL. Ten abandoned orders must not consume a block that spent nothing."""
-    d, ref = ledger.authorize(conn, order(50000), CFG, now=NOW)
-    ledger.settle_order(conn, ref, order_id="order_Y", result={"id": "order_Y"})
+def test_an_attempt_that_never_reached_razorpay_returns_its_amount(conn):
+    """E2's TTL. Ten abandoned attempts must not consume a block that spent nothing."""
+    ledger.authorize(conn, order(50000), CFG, now=NOW)      # never bound to an order id
     assert balance(conn)[1] == 50000
 
     later = NOW + timedelta(minutes=CFG.reservation_ttl_minutes, seconds=1)
@@ -183,14 +183,45 @@ def test_an_unpaid_order_returns_its_amount_to_the_block(conn):
     assert balance(conn)[1] == 100                  # only the probe's own hold
 
 
-def test_capture_after_the_ttl_is_refused(conn):
+def test_the_ttl_never_frees_budget_for_an_order_razorpay_can_still_charge(conn):
+    """Razorpay has no cancel-order call, so a created order stays payable and its
+    hold has to stand. Releasing it let six 200000 orders spaced past the TTL issue
+    1200000 of exposure against a 1000000 block."""
+    step = timedelta(minutes=CFG.reservation_ttl_minutes, seconds=1)
+    issued, now = 0, NOW
+    for i in range(6):
+        d, ref = ledger.authorize(conn, order(200000, key=f"o{i}"), CFG, now=now)
+        if d.outcome != ALLOW:
+            break
+        ledger.settle_order(conn, ref, order_id=f"order_{i}", result={"id": f"order_{i}"})
+        issued += 200000
+        now += step
+    assert issued == 1000000, f"issued {issued} against a {CFG.reserved} block"
+    assert d.outcome == BLOCK and d.rule == "R1", d
+
+    # The hold stands, so the payment Razorpay takes on the first order still settles.
+    cap = Call(tool="capture_payment", caller_id=CALLER, amount=200000,
+               currency="INR", order_id="order_0")
+    d2, ref2 = ledger.authorize(conn, cap, CFG, now=now)
+    assert d2.outcome == ALLOW, d2
+    ledger.settle_capture(conn, ref2, result={"id": "pay_0", "status": "captured",
+                                              "amount": 200000, "currency": "INR"})
+    assert balance(conn)[0] == 200000               # recorded as spent, not refused
+
+
+def test_capture_after_the_ttl_still_settles_the_order_it_holds(conn):
+    """The TTL only ever meant "nothing reached Razorpay". Once an order id is
+    bound the order is chargeable, so elapsed time must not refuse its capture."""
     d, ref = ledger.authorize(conn, order(50000), CFG, now=NOW)
     ledger.settle_order(conn, ref, order_id="order_Z", result={"id": "order_Z"})
     cap = Call(tool="capture_payment", caller_id=CALLER, amount=50000,
                currency="INR", order_id="order_Z")
     later = NOW + timedelta(minutes=CFG.reservation_ttl_minutes, seconds=1)
-    d2, _ = ledger.authorize(conn, cap, CFG, now=later)
-    assert d2.outcome == BLOCK and d2.rule == "R3", d2
+    d2, ref2 = ledger.authorize(conn, cap, CFG, now=later)
+    assert d2.outcome == ALLOW, d2
+    ledger.settle_capture(conn, ref2, result={"id": "pay_Z", "status": "captured",
+                                              "amount": 50000, "currency": "INR"})
+    assert balance(conn) == (50000, 0, 950000)      # held became spent, nothing leaked
 
 
 def test_an_upstream_failure_gives_the_hold_back(conn):
@@ -892,6 +923,36 @@ def test_a_captured_event_with_no_order_id_is_rejected(conn):
     assert out["applied"] is False
 
 
+def test_a_capture_event_that_beats_the_order_reply_is_applied_on_redelivery(conn):
+    """Razorpay's webhook can arrive before our own create_order reply binds the
+    id. Recording that event as processed made the redelivery a duplicate, so the
+    capture was dropped for good and `spent` stayed 0 after the payment happened."""
+    _, ref = ledger.authorize(conn, order(50000, key="early"), CFG, now=NOW)
+    event = {"id": "pay_early", "order_id": "order_early", "amount": 50000,
+             "currency": "INR", "status": "captured"}
+    early = ledger.reconcile_webhook(conn, "evt_early", "payment.captured", event, now=NOW)
+    assert (early["effect"], early["reason"]) == ("NOOP", "unknown_order")
+
+    ledger.settle_order(conn, ref, order_id="order_early", result={"id": "order_early"})
+    again = ledger.reconcile_webhook(conn, "evt_early", "payment.captured", event, now=NOW)
+    assert (again["effect"], again["reason"]) == ("APPLY", "capture_applied")
+    assert balance(conn) == (50000, 0, 950000)
+
+
+def test_a_redelivered_event_that_was_applied_is_still_a_duplicate(conn):
+    """The control. Dropping the dedupe row is scoped to unknown_order alone; an
+    event that reached a reservation must never apply twice."""
+    _, ref = ledger.authorize(conn, order(50000, key="once"), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_once", result={"id": "order_once"})
+    event = {"id": "pay_once", "order_id": "order_once", "amount": 50000,
+             "currency": "INR", "status": "captured"}
+    assert ledger.reconcile_webhook(conn, "evt_once", "payment.captured",
+                                    event, now=NOW)["effect"] == "APPLY"
+    again = ledger.reconcile_webhook(conn, "evt_once", "payment.captured", event, now=NOW)
+    assert (again["effect"], again["reason"]) == ("NOOP", "duplicate_event")
+    assert balance(conn) == (50000, 0, 950000)          # spent once, not twice
+
+
 def test_a_matching_event_against_a_frozen_block_is_rejected(conn):
     """Every money field agrees; the block is frozen, so it still refuses. A
     freeze means an unreconciled conflict, and settling into one hides it."""
@@ -941,6 +1002,9 @@ def test_an_empty_key_still_collapses_a_retry_inside_the_window(conn):
     ({"id": "pay_M", "amount": 60000}, "amount"),
     ({"id": "pay_M", "amount": "50000"}, "amount"),
     ({"id": "pay_M", "currency": "USD"}, "currency"),
+    # The reply named another order entirely and was still booked against this
+    # reservation, because order_id was the one field nothing compared.
+    ({"id": "pay_M", "order_id": "order_WRONG"}, "order"),
 ])
 def test_a_capture_reply_that_disagrees_on_money_freezes(conn, reply, named):
     """The reply named a different amount or currency from the one reserved, and
@@ -954,6 +1018,32 @@ def test_a_capture_reply_that_disagrees_on_money_freezes(conn, reply, named):
     assert ledger.settle_capture(conn, capture, result=reply, now=NOW) == "refused"
     assert balance(conn) == (0, 50000, 950000)
     assert named in ledger.snapshot(conn, CALLER).freeze_reason
+
+
+@pytest.mark.parametrize("reply, named", [
+    ({"id": "order_money", "amount": 900000}, "amount"),
+    ({"id": "order_money", "amount": "50000"}, "amount"),
+    ({"id": "order_money", "currency": "USD"}, "currency"),
+])
+def test_an_order_reply_that_disagrees_on_money_freezes(conn, reply, named):
+    """settle_capture has checked its reply's money since E20 and settle_order
+    checked nothing, so an order returned as 900000 against a 50000 hold was
+    handed back as success with the block unfrozen."""
+    _, ref = ledger.authorize(conn, order(50000, key="order-reply"), CFG, now=NOW)
+    assert ledger.settle_order(conn, ref, order_id="order_money",
+                               result=reply, now=NOW) == "refused"
+    assert named in ledger.snapshot(conn, CALLER).freeze_reason
+
+
+def test_an_order_reply_that_agrees_on_money_binds(conn):
+    """The control. A reply stating the reserved money, and one stating none of
+    it, both bind: an absent field makes no claim."""
+    for key, oid, reply in [("agrees", "order_a", {"id": "order_a", "amount": 50000,
+                                                   "currency": "INR"}),
+                            ("silent", "order_b", {"id": "order_b"})]:
+        _, ref = ledger.authorize(conn, order(50000, key=key), CFG, now=NOW)
+        assert ledger.settle_order(conn, ref, order_id=oid, result=reply, now=NOW) == "committed"
+    assert ledger.snapshot(conn, CALLER).frozen_at is None
 
 
 def test_a_capture_reply_that_agrees_on_money_commits(conn):
@@ -998,3 +1088,106 @@ def test_one_block_pays_for_three_purchases_and_then_refuses(db):
         assert balance(conn) == (400000, 0, 100000)
     finally:
         conn.close()
+
+
+def test_a_second_capture_of_one_order_is_refused_while_the_first_is_unresolved(conn):
+    """R7 is keyed by the idempotency key; the reservation is what is at stake.
+    A different key passed both the key check and the state check while the first
+    capture was still in flight, so two capture requests went out for one payment."""
+    _, ref = ledger.authorize(conn, order(50000, key="overlap"), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_O", result={"id": "order_O"})
+    cap = Call("capture_payment", CALLER, 50000, "INR", order_id="order_O",
+               payment_id="pay_O", idem_key="capture-one")
+    d, capture = ledger.authorize(conn, cap, CFG, now=NOW)
+    assert d.outcome == ALLOW
+    ledger.mark_outcome_pending(conn, capture)
+
+    again, _ = ledger.authorize(conn, replace(cap, idem_key="capture-two"), CFG, now=NOW)
+    assert (again.outcome, again.rule) == (BLOCK, "R7"), again
+
+
+def test_a_capture_of_an_order_with_nothing_in_flight_is_allowed(conn):
+    """The control. The new refusal must fire on a pending attempt and on
+    nothing else."""
+    _, ref = ledger.authorize(conn, order(50000, key="clear"), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_C", result={"id": "order_C"})
+    cap = Call("capture_payment", CALLER, 50000, "INR", order_id="order_C",
+               payment_id="pay_C", idem_key="capture-clear")
+    assert ledger.authorize(conn, cap, CFG, now=NOW)[0].outcome == ALLOW
+
+
+def test_a_derived_key_outlives_its_five_minutes_while_its_own_call_is_unresolved(conn):
+    """The retry of a create_order that never answered arrived at +301s, minted a
+    fresh derived key and took a second hold: one logical order, 100000 held
+    against a block that owed 50000."""
+    d, _ = ledger.authorize(conn, order(50000), CFG, now=NOW)      # no client key
+    assert d.outcome == ALLOW and balance(conn)[1] == 50000
+
+    later = NOW + timedelta(seconds=CFG.derived_key_ttl_seconds + 1)
+    retry, _ = ledger.authorize(conn, order(50000), CFG, now=later)
+    assert (retry.outcome, retry.rule) == (BLOCK, "R7"), retry
+    assert balance(conn)[1] == 50000                               # still one hold
+
+
+def test_a_derived_key_does_expire_once_its_call_has_settled(conn):
+    """The control, and the reason the five minutes exist at all: two deliberate
+    purchases of one item an hour apart are two orders, not a silent replay."""
+    _, ref = ledger.authorize(conn, order(50000), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_D1", result={"id": "order_D1"})
+    later = NOW + timedelta(seconds=CFG.derived_key_ttl_seconds + 1)
+    second, ref2 = ledger.authorize(conn, order(50000), CFG, now=later)
+    assert second.outcome == ALLOW and ref2.reservation_id != ref.reservation_id
+
+
+@pytest.mark.parametrize("outcome, expected", [
+    ("not_captured", (0, 0, 1000000)),      # the amount goes back to the block
+    ("captured", (50000, 0, 950000)),       # it is booked as spend
+])
+def test_an_operator_can_close_out_a_hold_whose_outcome_only_they_know(conn, outcome, expected):
+    """A capture is marked pending before it is sent and no error text can clear
+    it: "already captured" proves it happened and a timeout proves nothing. That
+    left a definitely-failed capture holding budget with nothing able to free it."""
+    _, ref = ledger.authorize(conn, order(50000, key="stuck"), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_S", result={"id": "order_S"})
+    cap = Call("capture_payment", CALLER, 50000, "INR", order_id="order_S",
+               payment_id="pay_S", idem_key="capture-stuck")
+    _, capture = ledger.authorize(conn, cap, CFG, now=NOW)
+    ledger.mark_outcome_pending(conn, capture)
+    assert balance(conn)[1] == 50000
+
+    assert ledger.reconcile_reservation(conn, capture.reservation_id,
+                                        outcome=outcome, now=NOW) == outcome
+    assert balance(conn) == expected
+
+
+def test_reconciling_the_same_hold_twice_changes_nothing(conn):
+    """The control. It is a one-way close-out, not a lever the balance can be
+    moved with repeatedly."""
+    _, ref = ledger.authorize(conn, order(50000, key="once-only"), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_T", result={"id": "order_T"})
+    assert ledger.reconcile_reservation(conn, ref.reservation_id,
+                                        outcome="captured", now=NOW) == "captured"
+    assert ledger.reconcile_reservation(conn, ref.reservation_id,
+                                        outcome="not_captured", now=NOW) == "already_settled"
+    assert balance(conn) == (50000, 0, 950000)
+    assert ledger.reconcile_reservation(conn, "res_that_does_not_exist",
+                                        outcome="captured", now=NOW) is None
+
+
+def test_a_completed_capture_replays_from_the_ledger_without_asking_razorpay(conn):
+    """The recovery path needed Razorpay most and trusted it least: a retry after
+    a lost reply resolved the payment upstream first, so an outage turned an
+    answer the ledger already held into BLOCK G4."""
+    _, ref = ledger.authorize(conn, order(50000, key="replayable"), CFG, now=NOW)
+    ledger.settle_order(conn, ref, order_id="order_R", result={"id": "order_R"})
+    cap = Call("capture_payment", CALLER, 50000, "INR", order_id="order_R",
+               payment_id="pay_R", idem_key="capture-replayable")
+    _, capture = ledger.authorize(conn, cap, CFG, now=NOW)
+    ledger.settle_capture(conn, capture, result={"id": "pay_R", "status": "captured",
+                                                 "amount": 50000, "currency": "INR"}, now=NOW)
+
+    stored = ledger.completed_capture(conn, CALLER, "capture-replayable", "pay_R")
+    assert stored is not None and stored["id"] == "pay_R"
+    # A key cannot be pointed at another payment to harvest an unrelated result.
+    assert ledger.completed_capture(conn, CALLER, "capture-replayable", "pay_OTHER") is None
+    assert ledger.completed_capture(conn, "another-caller", "capture-replayable", "pay_R") is None

@@ -106,7 +106,8 @@ def test_host_allowlist(monkeypatch, external, host, ok):
 ADMIN = "test-admin-token-not-the-agents"
 
 
-@pytest.mark.parametrize("path", ["/approve/abc", "/revoke/abc", "/block"])
+@pytest.mark.parametrize("path", ["/approve/abc", "/revoke/abc",
+                                 "/reconcile/abc", "/block"])
 def test_the_agent_token_cannot_reach_the_operator_routes(monkeypatch, tmp_path, path):
     """G12. The agent must hold RESERVE_GATE_TOKEN to reach /mcp at all, so
     guarding the approval gate with the same secret would let it approve its own
@@ -263,6 +264,61 @@ def test_an_unknown_capture_cannot_expire_before_reconciliation(monkeypatch, tmp
     conn.close()
 
 
+def test_an_order_whose_reply_was_lost_keeps_its_hold_past_the_ttl(monkeypatch, tmp_path):
+    """The order may exist upstream and be chargeable, so its budget is not free.
+    Letting it expire is the same exposure as releasing a bound order, reached by
+    the route where the id never came back to bind."""
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "lost-order.db"))
+    monkeypatch.setenv("RESERVE_GATE_AUDIT", str(tmp_path / "lost-order.jsonl"))
+    conn, cfg = ledger.connect(), server.config()
+    caller = server.caller_id()
+    ledger.init(conn, cfg, caller_id=caller)
+    now = ledger.now_utc()
+    call = Call("create_order", caller, 50000, "INR", idem_key="lost-order")
+    decision, ref = ledger.authorize(conn, call, cfg, now=now)
+    assert decision.allowed
+
+    async def times_out(_tool, _args):
+        raise UpstreamError("reply lost", known=False)
+
+    monkeypatch.setattr(server, "call_razorpay", times_out)
+    with pytest.raises(ValueError, match="reply lost"):
+        asyncio.run(server._settle(conn, "create_order", ref, {}))
+
+    later = now + timedelta(minutes=cfg.reservation_ttl_minutes, seconds=1)
+    ledger.authorize(conn, Call("create_order", caller, 100, "INR", idem_key="expiry-probe"),
+                     cfg, now=later)
+    reservation = conn.execute(
+        "SELECT state, outcome_unknown FROM reservations WHERE reservation_id = ?",
+        (ref.reservation_id,)).fetchone()
+    assert (reservation["state"], reservation["outcome_unknown"]) == ("held", 1)
+    assert ledger.snapshot(conn, caller).held == 50100      # the order's, plus the probe's
+    conn.close()
+
+
+def test_a_reply_that_arrives_clears_the_pending_mark(monkeypatch, tmp_path):
+    """The control for the test above: marking before the call only stays safe
+    because binding the order id takes the mark back off."""
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "bound-order.db"))
+    monkeypatch.setenv("RESERVE_GATE_AUDIT", str(tmp_path / "bound-order.jsonl"))
+    conn, cfg = ledger.connect(), server.config()
+    caller = server.caller_id()
+    ledger.init(conn, cfg, caller_id=caller)
+    _, ref = ledger.authorize(conn, Call("create_order", caller, 50000, "INR",
+                                         idem_key="bound-order"), cfg)
+
+    async def answers(_tool, _args):
+        return {"id": "order_bound"}
+
+    monkeypatch.setattr(server, "call_razorpay", answers)
+    assert asyncio.run(server._settle(conn, "create_order", ref, {}))["id"] == "order_bound"
+    reservation = conn.execute(
+        "SELECT order_id, outcome_unknown FROM reservations WHERE reservation_id = ?",
+        (ref.reservation_id,)).fetchone()
+    assert (reservation["order_id"], reservation["outcome_unknown"]) == ("order_bound", 0)
+    conn.close()
+
+
 def test_a_derived_key_collides_but_never_answers_for_a_different_payload(monkeypatch, tmp_path):
     monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "labelled-orders.db"))
     caller, calls = server.caller_id(), []
@@ -334,9 +390,8 @@ def test_approval_is_operator_only_and_single_use(monkeypatch, tmp_path):
     decision, ref = ledger.authorize(
         conn, Call("create_order", caller, 300000, "INR", idem_key="approval"),
         server.config())
+    ledger.park_hold(conn, ref, "create_order", {"amount": 300000, "currency": "INR"})
     conn.close()
-    server._HOLDS[ref.reservation_id] = (
-        "create_order", {"amount": 300000, "currency": "INR"}, ref)
     calls = []
 
     async def upstream(tool, args):
@@ -353,6 +408,40 @@ def test_approval_is_operator_only_and_single_use(monkeypatch, tmp_path):
     assert len(calls) == 1
 
 
+def test_a_hold_parked_by_one_process_is_approvable_by_another(monkeypatch, tmp_path):
+    """The pending call used to live in a dict in the serving process, so a
+    restart or a second worker answered 404 while the money stayed reserved in
+    SQLite. Nothing here shares memory with the call that parked the hold."""
+    monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "restart-approve.db"))
+    monkeypatch.setenv("RESERVE_GATE_TOKEN", TOKEN)
+    monkeypatch.setenv("RESERVE_GATE_ADMIN_TOKEN", ADMIN)
+    calls = []
+
+    async def upstream(tool, args):
+        calls.append((tool, args))
+        return {"id": "order_after_restart"}
+
+    monkeypatch.setattr(server, "call_razorpay", upstream)
+    caller = server.caller_id()
+    args = {"amount": 300000, "currency": "INR"}
+    with pytest.raises(ValueError, match="HOLD"):
+        asyncio.run(server._gated(Call("create_order", caller, 300000, "INR",
+                                       idem_key="restart-approval"), args))
+    assert calls == []                                  # parked, not forwarded
+
+    conn = ledger.connect()                             # stands in for the new process
+    reservation_id = conn.execute(
+        "SELECT reservation_id FROM reservations WHERE pending_call IS NOT NULL").fetchone()[0]
+    assert ledger.snapshot(conn, caller).held == 300000
+    conn.close()
+
+    app = Starlette(routes=[Route("/approve/{call_id}", server.approve, methods=["POST"])])
+    with TestClient(server.bearer_auth(app)) as c:
+        r = c.post("/approve/" + reservation_id, headers={"Authorization": f"Bearer {ADMIN}"})
+    assert r.status_code == 200 and r.json()["result"]["id"] == "order_after_restart"
+    assert len(calls) == 1
+
+
 def test_expired_approval_never_reaches_upstream(monkeypatch, tmp_path):
     monkeypatch.setenv("RESERVE_GATE_DB", str(tmp_path / "expired-approve.db"))
     monkeypatch.setenv("RESERVE_GATE_TOKEN", TOKEN)
@@ -365,9 +454,8 @@ def test_expired_approval_never_reaches_upstream(monkeypatch, tmp_path):
         server.config())
     conn.execute("UPDATE reservations SET expires_at = '2000-01-01T00:00:00.000000Z'"
                  " WHERE reservation_id = ?", (ref.reservation_id,))
+    ledger.park_hold(conn, ref, "create_order", {"amount": 300000, "currency": "INR"})
     conn.close()
-    server._HOLDS[ref.reservation_id] = (
-        "create_order", {"amount": 300000, "currency": "INR"}, ref)
 
     async def must_not_run(_tool, _args):
         raise AssertionError("expired approval reached upstream")
@@ -400,9 +488,8 @@ def test_a_hold_is_not_approvable_once_its_block_dies(monkeypatch, tmp_path, kil
         server.config())
     conn.execute(kill)
     conn.commit()
+    ledger.park_hold(conn, ref, "create_order", {"amount": 300000, "currency": "INR"})
     conn.close()
-    server._HOLDS[ref.reservation_id] = (
-        "create_order", {"amount": 300000, "currency": "INR"}, ref)
 
     async def must_not_run(_tool, _args):
         raise AssertionError("a dead block reached upstream through an approval")
@@ -429,9 +516,8 @@ def test_a_live_block_still_approves(monkeypatch, tmp_path):
     _, ref = ledger.authorize(
         conn, Call("create_order", caller, 300000, "INR", idem_key="live-block"),
         server.config())
+    ledger.park_hold(conn, ref, "create_order", {"amount": 300000, "currency": "INR"})
     conn.close()
-    server._HOLDS[ref.reservation_id] = (
-        "create_order", {"amount": 300000, "currency": "INR"}, ref)
     forwarded = []
 
     async def upstream(tool, args):

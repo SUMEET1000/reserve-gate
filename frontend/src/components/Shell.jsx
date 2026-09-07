@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { PAGES } from '../lib/api.js';
 import { Button, Roll } from './ui.jsx';
+import { FieldBackdrop } from './FieldBackdrop.jsx';
 
 // The Orbit Sheet, second half. The landing page is the general arrangement:
 // the object at the centre, the orbits around it, poster type. These five are
@@ -48,6 +49,7 @@ export function SiteHeader({ children }) {
 export function SiteFooter({ children }) {
   return (
     <footer className="site-footer">
+      <FieldBackdrop centre />
       <div className="site-footer__row">{children}</div>
       <Disclaimer />
     </footer>
@@ -109,6 +111,10 @@ export function ProofPage({ title, lede, current, footer, children, brand, stats
       <SheetIndex current={current} />
 
       <section aria-labelledby="sheet-title" className="title-block">
+        {/* The hero's ground, carried onto every sheet. It holds back on the
+            left where the title and lede sit and draws in the empty right
+            half, which is the same hold-back the landing hero uses. */}
+        <FieldBackdrop />
         {/* Registration ticks. The same four corner marks the landing sheet
             carries, so a visitor arriving here from it is on the same paper. */}
         <span className="title-block__tick" data-at="tl" aria-hidden="true" />
@@ -140,6 +146,7 @@ export function ProofPage({ title, lede, current, footer, children, brand, stats
       <main id="main-content" tabIndex="-1" className="sheet">{children}</main>
 
       <footer className="sheet-foot">
+        <FieldBackdrop centre />
         <p>{footer}</p>
         <div className="sheet-foot__row">
           <Brand />

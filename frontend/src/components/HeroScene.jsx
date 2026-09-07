@@ -313,6 +313,7 @@ const FIELD_FRAG = /* glsl */ `
   uniform vec3  uPaper;
   uniform vec3  uInk;
   uniform float uTextSide;     // 0 = fade the left (desktop), 1 = mobile
+  uniform float uCentreCopy;   // 1 = hold the middle back instead of a side
   uniform vec2  uCenter;       // gate center
 
   float gateDist(vec2 p) {
@@ -405,6 +406,15 @@ const FIELD_FRAG = /* glsl */ `
     float mobileCopyFade = mix(smoothstep(0.58, 0.40, vUv.y), 1.0, 1.0 - uTextSide);
     float sideFade = mix(smoothstep(0.38, 0.72, vUv.x), 1.0, uTextSide) * mobileCopyFade;
 
+    // Centred copy needs the middle held back and both margins drawn, which is
+    // the opposite shape to the two above - they clear one side for a column of
+    // text and this clears a column that has text on both sides of it. It
+    // replaces the side fade rather than multiplying it: two hold-backs over one
+    // block leave nothing drawn. uCentreCopy is 0 for the hero and for every page
+    // header, so their fade is the expression above, untouched.
+    sideFade = mix(sideFade, smoothstep(0.10, 0.32, abs(vUv.x - 0.5)) * mobileCopyFade,
+                   uCentreCopy);
+
     // Canvas border fade
     float edge = smoothstep(0.0, 0.10, vUv.x) * smoothstep(1.0, 0.90, vUv.x)
                * smoothstep(0.0, 0.09, vUv.y) * smoothstep(1.0, 0.91, vUv.y);
@@ -467,7 +477,7 @@ const FIELD_FRAG = /* glsl */ `
 // finished (measured 31 Aug 2026, harness/perf_check.py: GET / at 1640 ms
 // against a 500 ms budget, 130 ms once this moved off the critical path and the
 // compile went async).
-function mount(host) {
+function mount(host, { gate: withGate = true, centre = false } = {}) {
   // A refusal to run is not a failure state: the headline beside this canvas is
   // the content, and it is complete without any of it.
   let renderer;
@@ -530,7 +540,10 @@ function mount(host) {
   host.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  scene.environment = buildEnvironment(renderer);
+  // The PMREM room exists to be reflected by the chrome. A field-only mount has
+  // nothing to reflect it, and building it is where the hero's start-up second
+  // goes, so it is not built.
+  if (withGate) scene.environment = buildEnvironment(renderer);
 
   const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 60);
   camera.position.set(0, 0, 9);
@@ -552,6 +565,7 @@ function mount(host) {
     uPaper: { value: new THREE.Color().setHex(FIELD, THREE.LinearSRGBColorSpace) },
     uInk: { value: new THREE.Color().setHex(RING, THREE.LinearSRGBColorSpace) },
     uTextSide: { value: 0 },
+    uCentreCopy: { value: 0 },
     uCenter: { value: new THREE.Vector2() },
   };
   const field = new THREE.Mesh(
@@ -631,11 +645,14 @@ function mount(host) {
     })
   );
   gate.geometry.center();
-  scene.add(gate);
+  // Built either way, added only with the gate. Out of the scene it costs one
+  // ExtrudeGeometry and no shader: compileAsync never reaches the physical
+  // material, and resize() and draw() can keep writing its transform unread.
+  if (withGate) scene.add(gate);
 
   const key = new THREE.DirectionalLight(0xffffff, 0.30);
   key.position.set(3.2, 4.4, 5.5);
-  scene.add(key);
+  if (withGate) scene.add(key);
   // Behind, so it hits only the faces turned away from the camera - the grazing
   // ones - and its whole contribution lands on the silhouette and the chamfers.
   // White, not cyan. A metal takes the light's colour into its specular whole,
@@ -643,7 +660,7 @@ function mount(host) {
   // a blue edge down the right-hand post. Silver needs a neutral room.
   const rim = new THREE.DirectionalLight(0xffffff, 0.45);
   rim.position.set(-4.5, -1.4, -3.2);
-  scene.add(rim);
+  if (withGate) scene.add(rim);
 
   // The chain that makes it look photographed rather than rendered. Every
   // reference image is a chrome body whose highlights bleed light into the
@@ -682,7 +699,7 @@ function mount(host) {
   // to 21 and 18 at the two nearest the gate. That residue is the price of the
   // brightness Sumeet chose on 4 Sept and is not a regression to chase.
   const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.52, 0.34, 0.88);
-  composer.addPass(bloom);
+  if (withGate) composer.addPass(bloom);
 
   // Chromatic aberration and a wide horizontal flare, in one pass. The offset
   // scales with distance from the centre, the way a real lens fails, and is
@@ -727,7 +744,7 @@ function mount(host) {
       }
     `,
   });
-  composer.addPass(lens);
+  if (withGate) composer.addPass(lens);
 
   // Last: the sRGB encode, and nothing else. Tone mapping is already done, per
   // material, inside the RenderPass - which is the whole reason this is not an
@@ -763,7 +780,14 @@ function mount(host) {
     // subject, and a portal that fills its half of the frame leaves none. This
     // is the one number that decides how much of the drawing is drawing.
     const tan = Math.tan((camera.fov * Math.PI) / 360);
-    camera.position.z = Math.max(5.10 / tan, 3.70 / (tan * camera.aspect));
+    // With the solid in frame the distance is solved to fit it. With only the
+    // field there is nothing to fit, so it is solved to hold the contour
+    // interval at a fixed size in pixels instead - otherwise a 400px title
+    // block and a 950px hero draw the same pattern at very different scales.
+    // 0.01505 world units per pixel is the hero's own ratio at 1080p.
+    camera.position.z = withGate
+      ? Math.max(5.10 / tan, 3.70 / (tan * camera.aspect))
+      : Math.max(1, FIELD_Z + (h * 0.01505) / (2 * tan));
     camera.updateProjectionMatrix();
 
     // Wide enough for the text column and the portal side by side: park the
@@ -795,6 +819,15 @@ function mount(host) {
     gateAimX = wide ? 0.36 : 0;
     gateAimY = -(gateBaseY / halfH);
     uniforms.uTextSide.value = wide ? 0 : 1;
+    uniforms.uCentreCopy.value = centre ? 1 : 0;
+    // Centred copy wants the falloff centred too: uCenter follows the solid's x,
+    // so parking that at 0 puts the brightest part of the field behind the column
+    // and the drawn part in both margins, which is the whole point of the mode.
+    if (centre) {
+      gateBaseX = 0;
+      gate.position.x = 0;
+      gateAimX = 0;
+    }
 
     const fieldHalfH = halfAt(camera.position.z - FIELD_Z);
     const span = new THREE.Vector2(fieldHalfH * camera.aspect * 2, fieldHalfH * 2);
@@ -976,7 +1009,11 @@ function mount(host) {
   };
 }
 
-export default function HeroScene({ className = '' }) {
+// `gate` false draws the field alone. uCenter needs no branch for it: it is
+// gate.position projected onto the field plane, and that lands at 0.18 of the
+// span whatever the camera distance, so the ground blooms in the same place
+// under the solid and without it.
+export default function HeroScene({ className = '', gate = true, centre = false }) {
   const hostRef = useRef(null);
 
   useEffect(() => {
@@ -984,7 +1021,7 @@ export default function HeroScene({ className = '' }) {
     if (!host) return;
     let teardown = null;
     let cancelled = false;
-    const start = () => { if (!cancelled) teardown = mount(host); };
+    const start = () => { if (!cancelled) teardown = mount(host, { gate, centre }); };
     // The timeout is the point: on a slow machine idle may never arrive, and
     // the hero has to appear anyway.
     const idle = 'requestIdleCallback' in window;

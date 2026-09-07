@@ -1,5 +1,6 @@
 import { Component, Suspense, lazy } from 'react';
 import { Brand, Button, Roll, SiteFooter, SiteHeader } from '../components/Shell.jsx';
+import { FieldBackdrop } from '../components/FieldBackdrop.jsx';
 
 // three.js is 590 KB of the bundle and only this page draws with it, so it
 // loads as its own chunk (web/app-hero.js) rather than on all six pages.
@@ -284,6 +285,7 @@ export default function Landing() {
             it needs is the sentence and one way in, on the same sheet as
             everything above it. */}
         <section className="landing-close" aria-labelledby="close-title">
+          <FieldBackdrop centre />
           <h2 id="close-title">The gate stays between intent and payment.</h2>
           <p>
             The AI can prepare the request. It cannot raise its own limit, approve itself,

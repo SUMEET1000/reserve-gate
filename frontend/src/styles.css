@@ -5335,6 +5335,57 @@ body[data-page="landing"][data-skin="night"].js-reveal .reveal.is-in>*:nth-child
   to { transform: translateX(100vw); }
 }
 
+/* The hero's contour field reused as the ground of the five sheet headers, the
+   demo header and the landing close. Added 7 Sept 2026 on Sumeet's instruction:
+   the right half of every page header was empty, and this is the same animated
+   background the hero already draws, with the same pointer follow.
 
+   No mask and no gradient over it. The shader fades all four canvas edges to
+   --color-paper itself, which is the page's own colour, so the canvas has no
+   edge to cut against the sheet - the landing hero's extra bottom mask exists
+   to end its rings early, not to hide a seam. */
+.field-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
 
+/* z-index 0 makes each section its own stacking context, which is what puts the
+   canvas above the page ground and below the words without any of the text
+   needing a z-index of its own. The registration ticks are position:absolute
+   with z-index auto, so they stay above it too. */
+.title-block,
+.landing-close,
+.site-footer,
+.sheet-foot {
+  position: relative;
+  z-index: 0;
+}
 
+/* The close and both footers run the shader's centre hold-back, so the copy
+   column is clear and the drawing is in both margins. They are also read at a
+   glance rather than looked at, so the field is quieter here than in a header.
+   The footers carry the lower value: their text is --color-muted rather than
+   ink, so it has the least contrast to give away. */
+/* Raised 0.55 -> 0.82 on 7 Sept 2026, the same lift the footers were given in
+   the same session and for the same reason: the lines were there and were not
+   read. It sits above the footers deliberately - this is a full plate that is
+   looked at, and a footer is glanced past. Measured 7 Sept 2026: brightest line
+   rgb(36,40,22) -> rgb(45,51,23), worst text contrast 9.08 against a 4.5 floor,
+   and 0.0% of the paper under its copy lifted at all. */
+.landing-close .field-backdrop {
+  opacity: 0.82;
+}
+
+/* Raised 0.42 -> 0.68 on 7 Sept 2026: at 0.42 the lines were there and could
+   not be seen. Opacity is the honest lever here rather than the shader's line
+   colour, because the canvas ground is --color-paper itself - the page's own
+   colour - so this scales the lines against the sheet and cannot lift the
+   ground between them. Measured 7 Sept 2026: the brightest line in a footer
+   went rgb(26,28,20) -> rgb(40,44,23), and the worst text contrast over it is
+   8.03 against a 4.5 floor. */
+.site-footer .field-backdrop,
+.sheet-foot .field-backdrop {
+  opacity: 0.68;
+}

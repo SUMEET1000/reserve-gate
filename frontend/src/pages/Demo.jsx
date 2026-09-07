@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, askRows, groupRupees, money, onlyDigits, plainReason } from '../lib/api.js';
 import { Button, RazorpayBrand, Roll, SiteFooter, SiteHeader } from '../components/Shell.jsx';
 import { Disclosure, ErrorLine, Marginal, Note, Panel, VerdictMark } from '../components/ui.jsx';
+import { FieldBackdrop } from '../components/FieldBackdrop.jsx';
 
 // The guided demo, rebuilt into The Orbit Sheet on 2 Sept 2026. It was the one
 // page the 1 Sept rebuild did not reach, so until now it carried the old world
@@ -445,6 +446,7 @@ export default function Demo() {
       </SiteHeader>
 
       <section aria-labelledby="demo-title" className="title-block demo-title-block">
+        <FieldBackdrop />
         {/* The same registration ticks the five detail sheets carry, so a
             visitor arriving from any of them is on the same paper. */}
         <span className="title-block__tick" data-at="tl" aria-hidden="true" />

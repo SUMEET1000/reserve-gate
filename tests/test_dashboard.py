@@ -1289,3 +1289,96 @@ def test_a_lost_capture_reply_is_answered_by_a_retry_not_a_404(c, monkeypatch):
     # the replay is keyed on the payment and not on "any id from this visitor".
     other = c.post("/api/live-checkout/capture", json={"payment_id": "pay_neverseen1"})
     assert other.status_code == 404, other.text
+
+
+def test_two_live_payments_racing_one_open_slot_leave_exactly_one_winner(app, c, monkeypatch):
+    """The capture slot's claim, raced by two genuinely parallel browsers.
+
+    The blind audit reached the easy half - two replays of a payment that had
+    already finished, both refused - and never the open-slot case: two different
+    real payments arriving while the slot is still `created`. A claim that read
+    the row and wrote it back outside one transaction would hand both threads the
+    same open slot, and one order would be captured twice.
+
+    Two TestClients rather than two threads on one: each request runs its own
+    portal and its own event loop, so this is real parallelism. The single
+    process' loop is what makes the race hard to hit through the HTTP layer
+    today, and that is not a property to rest a money control on - the guard has
+    to be the transaction. Both carry the same two cookies, so the server sees
+    one visitor with one slot.
+
+    The SELECT is slowed so the window is wide enough that the mutation fails
+    every run rather than occasionally. Measured 5 of 5 with `BEGIN IMMEDIATE`
+    in this handler downgraded to a deferred `BEGIN`, on 6 Sept 2026: the run
+    dies with `sqlite3.OperationalError: database is locked`, surfacing as
+    "Received multiple http.response.start messages". That is the honest
+    reading, and it is not two silent captures - a deferred BEGIN takes a read
+    lock, so the UPDATE cannot upgrade while the rival holds one, and G17's
+    busy_timeout turns the collision into a lock error rather than a double
+    debit. The same qualification is on
+    `test_two_concurrent_calls_cannot_both_pass` in test_ledger.py: what the
+    mutation proves is that the transaction is load-bearing, not that its
+    absence is silently lossy.
+    """
+    import time
+
+    _test_key(monkeypatch)
+
+    async def fake(tool, args):
+        if tool == "create_order":
+            return {"id": "order_public123", "amount": 10000, "currency": "INR"}
+        if tool == "fetch_payment":
+            return {"id": args["payment_id"], "order_id": "order_public123",
+                    "amount": 10000, "currency": "INR"}
+        return {"id": args["payment_id"], "status": "captured",
+                "amount": 10000, "currency": "INR"}
+
+    monkeypatch.setattr(server, "call_razorpay", fake)
+    assert c.post("/api/live-checkout/order", json={}).status_code == 200
+
+    # The second browser is the same visitor: both cookies are copied, or the
+    # server sees two visitors with a slot each and there is no race to run.
+    rival = TestClient(app)
+    for name, value in c.cookies.items():
+        rival.cookies.set(name, value)
+
+    class Slowed:
+        """Delegates everything and holds the slot SELECT open."""
+
+        def __init__(self, conn):
+            self._conn = conn
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        def execute(self, sql, *args):
+            cursor = self._conn.execute(sql, *args)
+            if "live_checkout_slots" in sql and "status = 'created'" in sql:
+                time.sleep(0.15)
+            return cursor
+
+    real_connect = ledger.connect
+    monkeypatch.setattr(ledger, "connect", lambda *a, **k: Slowed(real_connect(*a, **k)))
+
+    def capture(client, payment_id):
+        return client.post("/api/live-checkout/capture", json={"payment_id": payment_id})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        both = [pool.submit(capture, c, "pay_public123"),
+                pool.submit(capture, rival, "pay_public456")]
+        codes = sorted(f.result().status_code for f in both)
+
+    monkeypatch.setattr(ledger, "connect", real_connect)
+
+    assert codes == [200, 404], codes
+    # The outcome and the money, because one order captured twice is the defect
+    # and two 200s is only how it would show.
+    spent = c.get("/api/session").json()["block"]["spent"]
+    assert spent == 10000, spent
+
+    conn = ledger.connect()
+    try:
+        rows = conn.execute("SELECT status, payment_id FROM live_checkout_slots").fetchall()
+    finally:
+        conn.close()
+    assert [r["status"] for r in rows] == ["captured"], [dict(r) for r in rows]

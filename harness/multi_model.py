@@ -19,7 +19,6 @@ import pathlib
 import sys
 import urllib.error
 import urllib.request
-from datetime import timedelta
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 

@@ -214,6 +214,31 @@ run fails outright instead of quietly shrinking every excess.
 `web/rules.json` carries the same eight rules as the table below, for the rules
 page to render. They are two copies of one fact: change either and change both.
 
+## Operator recovery inbox
+
+Open `/operator` and enter `RESERVE_GATE_ADMIN_TOKEN`. The page stores the token
+only in memory for the current visit; locking the inbox or leaving the page clears
+it. The page shell is public, but every `/operator/` API requires the operator
+credential. The agent token cannot open the inbox data or run recovery actions.
+
+The inbox lists pending upstream approvals, held reservations with unknown
+outcomes, and frozen blocks across agent and browser-demo callers. Local demo
+orders have a `demo_` prefix. Select an item to inspect its references, timestamps,
+and available actions; frozen blocks include their latest 20 reservations.
+
+- **Approve request** uses the existing single-use approval route and rechecks
+  expiry, revocation, and freeze state before forwarding.
+- **Check payment status** fetches the recorded payment from the provider. Only
+  a captured payment whose ID, order, amount, and currency match is sent through
+  the existing settlement rules. It does not initiate another charge.
+- **Unfreeze after review** uses the existing operator control. It clears the
+  freeze, without reconciling or rewriting payment history.
+
+Missing references, provider failures, and unconfirmed captures leave funds
+reserved for manual review. The inbox does not provide a manual “mark successful”
+or “release funds” action. It relies on the existing database and audit storage;
+it does not add persistent hosting storage or backups.
+
 ## Architecture
 
 ```text

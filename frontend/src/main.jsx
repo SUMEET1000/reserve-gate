@@ -9,11 +9,12 @@ import Mutate from './pages/Mutate.jsx';
 import Trace from './pages/Trace.jsx';
 import Rules from './pages/Rules.jsx';
 import Evidence from './pages/Evidence.jsx';
+import Operator from './pages/Operator.jsx';
 import { ErrorBoundary } from './components/ErrorBoundary.jsx';
 import { PageTransitionOverlay } from './components/PageTransition.jsx';
 
-// One bundle for seven pages. The server keeps serving seven separate HTML
-// files at seven exact paths, because PUBLIC_PATHS is a closed set and a
+// One bundle for the pages. The server keeps serving separate HTML
+// files at exact paths, because PUBLIC_PATHS is a closed set and a
 // client-side router would need a catch-all route to replace it. The shell
 // names which page it is; this picks the component.
 const ROUTES = {
@@ -24,6 +25,7 @@ const ROUTES = {
   trace: Trace,
   rules: Rules,
   evidence: Evidence,
+  operator: Operator,
 };
 
 if (typeof document !== 'undefined' && document.documentElement && !document.documentElement.dataset.skin) {
@@ -31,6 +33,7 @@ if (typeof document !== 'undefined' && document.documentElement && !document.doc
 }
 
 const PATH_TO_PAGE = {
+  '/operator': 'operator',
   '/': 'landing',
   '/index.html': 'landing',
   '/demo': 'demo',
@@ -48,6 +51,7 @@ const PATH_TO_PAGE = {
 };
 
 const PAGE_TO_PATH = {
+  operator: '/operator',
   landing: '/',
   demo: '/demo',
   attack: '/attack',
@@ -58,6 +62,7 @@ const PAGE_TO_PATH = {
 };
 
 const PAGE_TITLES = {
+  operator: 'Recovery inbox — reserve-gate',
   landing: 'reserve-gate — AI Agent Spending Gateway',
   demo: 'Guided Demo — reserve-gate',
   attack: 'Try to Break It — reserve-gate',

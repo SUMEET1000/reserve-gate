@@ -25,14 +25,14 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from dotenv import load_dotenv
 
-from . import audit, dashboard, ledger
+from . import audit, dashboard, ledger, operator
 from .policy import BLOCK, HOLD, Call, Decision, PolicyRefusal, load_config
 from .upstream import UpstreamError, call_razorpay
 from .webhook import handle as handle_webhook
 
 # Paths the operator uses and the agent must never reach. Checked against
 # RESERVE_GATE_ADMIN_TOKEN, a different secret from the one the agent holds.
-ADMIN_PATHS = ("/approve/", "/revoke/", "/unfreeze/", "/reconcile/", "/block")
+ADMIN_PATHS = ("/approve/", "/revoke/", "/unfreeze/", "/reconcile/", "/block", "/operator/")
 
 # Routes that need no credential at all: the uptime check, Razorpay's webhook
 # (which authenticates by signature instead), and the read-only demo site.
@@ -435,6 +435,7 @@ async def approve(request):
     return JSONResponse({"approved": call_id, "result": result})
 
 
+operator.install(mcp)
 dashboard.install(mcp, live_available=live_checkout_available,
                   live_order=live_checkout_order, live_capture=live_checkout_capture)
 

@@ -87,6 +87,15 @@ adopting a changed money API would be the wrong default.
 
 ## Money primitive
 
+The operator recovery view lives at `/operator`. Its HTML shell contains no
+private state; `/operator/inbox` and `/operator/recover/{reservation_id}` require
+the admin bearer token. `src/operator.py` reads the existing ledger for the inbox
+and fetches provider payment evidence for recovery. Matching captured payments
+reuse `ledger.reconcile_webhook()` with an `operator:` event ID, retaining its
+transactional conflict checks and payment deduplication. Operator observations
+and results are also identified separately in the audit log. The view calls the
+existing approval and unfreeze routes without changing their behavior.
+
 Orders and Payments, not Payment Links (test mode caps those at 30 per business)
 and not refunds (`create_refund` is disabled on Razorpay's hosted MCP server).
 

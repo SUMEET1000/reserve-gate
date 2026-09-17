@@ -59,6 +59,7 @@ PAYMENT_ID = re.compile(r"\Apay_[A-Za-z0-9]{6,32}\Z")
 # Static files, by exact name. There is no caller-supplied path anywhere in this
 # module, so directory traversal is not defended against - it is absent.
 PAGES = {
+    "/operator": "operator.html",
     "/": "index.html", "/demo": "demo.html", "/attack": "attack.html", "/mutate": "mutate.html",
     "/trace": "trace.html", "/rules": "rules.html", "/evidence": "evidence.html",
     "/app.css": "app.css", "/app.js": "app.js", "/razorpay-logo.png": "razorpay-logo.png",

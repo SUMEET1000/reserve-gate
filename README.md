@@ -10,9 +10,17 @@ a balance that runs out.**
 
 ## Start here
 
-Shops are beginning to let AI agents buy things on their own. To do that, the
-shop hands the agent a payment key. That key has no limit on it. The agent can
-spend everything, any number of times, forever.
+NPCI is building the **Unified Agent Protocol (UAP)** so AI agents can pay over
+UPI. Its stated job is to verify that an agent may act for a user, define the
+limits of that authority, and establish accountability. Razorpay and NPCI
+piloted agentic UPI payments on Reserve Pay in February 2026.
+[vendor-doc, fetched 17 Sept 2026:
+business-standard.com/finance/news/india-may-allow-agentic-ai-led-upi-transactions-under-new-npci-protocol-126070801343_1.html]
+
+The rails are being built. The limit is not — not for agents a merchant does not
+run. Today a shop that lets an outside AI agent buy on its own hands it a payment
+key, and that key has no limit on it. The agent can spend everything, any number
+of times, forever.
 
 Today the only thing stopping it is an instruction written in English, somewhere
 in the agent's prompt: *"do not spend more than ten thousand rupees."* That is
@@ -99,6 +107,27 @@ hands an outside AI buyer a key hands it the whole account.
 `reserve-gate` is that missing piece: the same four properties, applied to the
 third-party path, by a service the merchant runs. Agent Studio secures Razorpay's
 agents; this secures everyone else's.
+
+## Where this sits among the agent-payment protocols
+
+Four standards are being built for agent payments. `reserve-gate` implements none
+of them. It implements the thing all four assume somebody else has already
+built — the limit that is actually enforced after authority is granted.
+
+| Protocol | What it is | Relation to `reserve-gate` |
+|---|---|---|
+| **UAP** (NPCI) | Verifies an agent may act for a user, defines the limits of that authority, establishes accountability | Closest fit. The block, R0–R7 and the hash chain are the limit-and-accountability half, for the third-party path |
+| **AP2** (Google) | Agent payments carrying signed mandates; its x402 extension is production-ready for crypto | A mandate grants authority. This is what bounds one after it is granted |
+| **ACP** (OpenAI) | Agent checkout, launched in ChatGPT Instant Checkout | Buyer-side checkout flow. Out of scope here |
+| **x402** | Per-request payment over HTTP 402; Stripe integrated it on Base in February 2026 | A different money rail. Not used |
+
+[vendor-doc, fetched 17 Sept 2026: business-standard.com as above, and
+crossmint.com/learn/agentic-payments-protocols-compared]
+
+`reserve-gate` speaks MCP because that is the transport Razorpay's own hosted
+server uses today. The gate does not depend on it: `policy.decide()` takes a call
+and returns a verdict, and nothing inside it knows what MCP is. A UAP or AP2
+front end would reuse the same eight rules unchanged.
 
 ## Run it on your own machine — three commands
 
